@@ -1,0 +1,36 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "hipsterbrown:waveshare-roarm",
+  "visibility": "public",
+  "url": "https://github.com/hipsterbrown/viam-waveshare-roarm",
+  "description": "Modular arm component: arm",
+  "models": [
+    {
+      "api": "rdk:component:arm",
+      "model": "hipsterbrown:waveshare-roarm:arm",
+      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "markdown_link": "README.md#model-hipsterbrownwaveshare-roarmarm"
+    },
+    {
+      "api": "rdk:component:gripper",
+      "model": "hipsterbrown:waveshare-roarm:gripper",
+      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "markdown_link": "README.md#model-hipsterbrownwaveshare-roarmgripper"
+    }
+  ],
+  "applications": null,
+  "markdown_link": "README.md",
+  "entrypoint": "bin/waveshare-roarm",
+  "first_run": "",
+  "build": {
+    "build": "make module.tar.gz",
+    "setup": "make setup",
+    "path": "module.tar.gz",
+    "arch": [
+      "linux/amd64",
+      "linux/arm64",
+      "darwin/arm64",
+      "windows/amd64"
+    ]
+  }
+}

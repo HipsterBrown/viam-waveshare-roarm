@@ -1,0 +1,13 @@
+{
+  "module_name": "waveshare-roarm",
+  "namespace": "hipsterbrown",
+  "language": "go",
+  "resource_type": "component",
+  "resource_subtype": "arm",
+  "model_name": "arm",
+  "enable_cloud_build": true,
+  "initialize_git": false,
+  "generator_version": "0.1.0",
+  "generated_on": "2025-06-26T18:59:18.634628Z",
+  "module_readme_link": "README.md"
+}
