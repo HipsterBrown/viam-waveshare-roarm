@@ -3,12 +3,12 @@
   "module_id": "hipsterbrown:waveshare-roarm",
   "visibility": "public",
   "url": "https://github.com/hipsterbrown/viam-waveshare-roarm",
-  "description": "Modular arm component: arm",
+  "description": "Control WaveShare's RoArm-M3 5-DOF + Gripper collaborative robotic arm",
   "models": [
     {
       "api": "rdk:component:arm",
       "model": "hipsterbrown:waveshare-roarm:arm",
-      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "short_description": "Control the first 5 joints of the RoArm-M3: base, shoulder, elbow, wrist, and roll",
       "markdown_link": "README.md#model-hipsterbrownwaveshare-roarmarm"
     },
     {

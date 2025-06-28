@@ -49,7 +49,7 @@ type roarmM3Gripper struct {
 
 	name       resource.Name
 	logger     logging.Logger
-	controller *RoArmController
+	controller *SafeRoArmController
 	model      referenceframe.Model
 
 	// State management
@@ -82,9 +82,9 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		Logger:   logger,
 	}
 
-	controller, err := NewRoArmController(controllerConfig)
+	controller, err := GetSharedController(controllerConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create RoArm controller: %w", err)
+		return nil, fmt.Errorf("failed to get shared RoArm controller: %w", err)
 	}
 
 	g := &roarmM3Gripper{
@@ -101,7 +101,7 @@ func (g *roarmM3Gripper) Name() resource.Name {
 	return g.name
 }
 
-// Open opens the gripper (sets to -10 degrees - fully open)
+// Open opens the gripper (sets to 100 degrees - fully open)
 func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{}) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -109,8 +109,8 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	g.isMoving.Store(true)
 	defer g.isMoving.Store(false)
 
-	// Open position: -10 degrees (fully open based on SDK limits)
-	err := g.controller.SetGripperPosition(-10, 500, 50)
+	// Open position: 100 degrees (fully open based on SDK limits)
+	err := g.controller.SetGripperPosition(100, 500, 50)
 	if err != nil {
 		return fmt.Errorf("failed to open gripper: %w", err)
 	}
@@ -122,7 +122,7 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	return nil
 }
 
-// Grab closes the gripper to grab an object (sets to 100 degrees - fully closed)
+// Grab closes the gripper to grab an object (sets to -10 degrees - fully closed)
 func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{}) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -130,8 +130,8 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	g.isMoving.Store(true)
 	defer g.isMoving.Store(false)
 
-	// Grab position: 100 degrees (fully closed based on SDK limits)
-	err := g.controller.SetGripperPosition(100, 500, 50)
+	// Grab position: -10 degrees (fully closed based on SDK limits)
+	err := g.controller.SetGripperPosition(-10, 500, 50)
 	if err != nil {
 		return false, fmt.Errorf("failed to grab with gripper: %w", err)
 	}
@@ -149,7 +149,7 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	}
 
 	// If the gripper is significantly less than 100 degrees, something is blocking it
-	grabbed := position < 90.0
+	grabbed := position > 0.0
 
 	if grabbed {
 		g.logger.Debug("Gripper successfully grabbed an object")
@@ -181,7 +181,7 @@ func (g *roarmM3Gripper) ModelFrame() referenceframe.Model {
 
 // Additional helper methods for gripper control
 
-// GetPosition returns the current gripper position (0-90 degrees)
+// GetPosition returns the current gripper position (-10 to 100 degrees)
 func (g *roarmM3Gripper) GetPosition(ctx context.Context) (float64, error) {
 	position, err := g.controller.GetGripperPosition()
 	if err != nil {
@@ -223,7 +223,8 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 }
 
 func (g *roarmM3Gripper) Close(context.Context) error {
-	return g.controller.Close()
+	ReleaseSharedController()
+	return nil
 }
 
 func (g *roarmM3Gripper) CurrentInputs(ctx context.Context) ([]referenceframe.Input, error) {
@@ -292,6 +293,14 @@ func (g *roarmM3Gripper) DoCommand(ctx context.Context, cmd map[string]interface
 		}
 		err := g.SetPosition(ctx, degrees, speed, acc)
 		return map[string]interface{}{"success": err == nil}, err
+
+	case "controller_status":
+		refCount, hasController, configSummary := GetControllerStatus()
+		return map[string]interface{}{
+			"ref_count":      refCount,
+			"has_controller": hasController,
+			"config":         configSummary,
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown command: %v", cmd["command"])
