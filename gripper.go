@@ -78,7 +78,7 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		Host:     cfg.Host,
 		Port:     cfg.Port,
 		Baudrate: cfg.Baudrate,
-		Timeout:  cfg.Timeout,
+		Timeout:  Duration(cfg.Timeout),
 		Logger:   logger,
 	}
 

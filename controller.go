@@ -125,7 +125,7 @@ type RoArmConfig struct {
 	Baudrate int    `json:"baudrate,omitempty"`
 
 	// Common configuration
-	Timeout time.Duration  `json:"timeout,omitempty"`
+	Timeout Duration       `json:"timeout,omitempty"`
 	Logger  logging.Logger `json:"-"` // Logger for debugging
 }
 
@@ -141,8 +141,8 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 		controller.logger = logging.NewLogger("roarm_controller")
 	}
 
-	if config.Timeout > 0 {
-		controller.timeout = config.Timeout
+	if config.Timeout.ToStdDuration() > 0 {
+		controller.timeout = config.Timeout.ToStdDuration()
 	}
 
 	// Determine communication method

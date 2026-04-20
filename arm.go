@@ -46,7 +46,7 @@ type RoArmM3Config struct {
 	Baudrate int    `json:"baudrate,omitempty"`
 
 	// Common configuration
-	Timeout time.Duration `json:"timeout,omitempty"`
+	Timeout Duration `json:"timeout,omitempty"`
 
 	// Motion configuration
 	SpeedDegsPerSec        float32 `json:"speed_degs_per_sec,omitempty"`
