@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -236,7 +237,7 @@ func (g *roarmM3Gripper) CurrentInputs(ctx context.Context) ([]referenceframe.In
 	}
 
 	// Convert degrees to radians
-	radians := position * 3.14159265359 / 180.0
+	radians := position * math.Pi / 180.0
 
 	return []referenceframe.Input{
 		{Value: radians},
@@ -254,7 +255,7 @@ func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referencefr
 		}
 
 		// Convert radians to degrees
-		degrees := inputSet[0].Value * 180.0 / 3.14159265359
+		degrees := inputSet[0].Value * 180.0 / math.Pi
 
 		if err := g.SetPosition(ctx, degrees, 500, 50); err != nil {
 			return err
@@ -277,7 +278,7 @@ func (g *roarmM3Gripper) DoCommand(ctx context.Context, cmd map[string]interface
 		}
 		return map[string]interface{}{
 			"position_degrees": position,
-			"position_radians": position * 3.14159265359 / 180.0,
+			"position_radians": position * math.Pi / 180.0,
 		}, nil
 
 	case "set_position":
