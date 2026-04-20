@@ -201,8 +201,6 @@ func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{})
 	if r.closed.Load() {
 		return nil, errClosed
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	inputs, err := r.CurrentInputs(ctx)
 	if err != nil {
@@ -360,11 +358,16 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 	if r.closed.Load() {
 		return nil, errClosed
 	}
+
+	// r.controller is swapped only in Reconfigure, which takes r.mu.Lock().
+	// Briefly lock to snapshot, then release before the blocking serial I/O
+	// so concurrent callers (e.g. EndPosition) don't deadlock on re-entry.
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	ctrl := r.controller
+	r.mu.Unlock()
 
 	// Get all joint positions from controller (includes gripper)
-	allRadians, err := r.controller.GetJointRadians(ctx)
+	allRadians, err := ctrl.GetJointRadians(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read joint positions: %w", err)
 	}

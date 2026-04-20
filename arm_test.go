@@ -88,6 +88,27 @@ func TestMoveRejectsWrongLengthInput(t *testing.T) {
 	}
 }
 
+// TestEndPositionDoesNotDeadlock exercises EndPosition -> CurrentInputs ->
+// JointPositions, which previously re-entered r.mu and deadlocked under
+// sync.Mutex. A timeout ctx bounds any regression.
+func TestEndPositionDoesNotDeadlock(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
+	r := &roarmM3{
+		controller:   fc,
+		defaultSpeed: 500,
+		defaultAcc:   50,
+		jointLimits:  RoArmM3JointLimits[:5],
+		logger:       logging.NewTestLogger(t),
+		opMgr:        operation.NewSingleOperationManager(),
+		model:        mustLoadModel(t),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := r.EndPosition(ctx, nil); err != nil {
+		t.Fatalf("EndPosition returned error: %v", err)
+	}
+}
+
 func newTestArm(t *testing.T, fc *fakeController) *roarmM3 {
 	t.Helper()
 	return &roarmM3{
