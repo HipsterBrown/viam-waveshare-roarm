@@ -53,13 +53,22 @@ type RoArmM3Config struct {
 	AccelerationDegsPerSec float32 `json:"acceleration_degs_per_sec_per_sec,omitempty"`
 }
 
+var validBaudrates = map[int]bool{
+	0: true, // zero means "use default" (115200)
+	9600: true, 19200: true, 38400: true, 57600: true,
+	115200: true, 230400: true, 921600: true, 1000000: true,
+}
+
 // Validate ensures all parts of the config are valid
 func (cfg *RoArmM3Config) Validate(path string) ([]string, []string, error) {
 	if cfg.Host == "" && cfg.Port == "" {
-		return nil, nil, fmt.Errorf("must specify either host for HTTP or port for serial communication")
+		return nil, nil, fmt.Errorf("%s: must specify either host or port", path)
 	}
 	if cfg.Host != "" && cfg.Port != "" {
-		return nil, nil, fmt.Errorf("cannot specify both host and port, choose either HTTP or serial communication")
+		return nil, nil, fmt.Errorf("%s: cannot specify both host and port", path)
+	}
+	if !validBaudrates[cfg.Baudrate] {
+		return nil, nil, fmt.Errorf("%s: baudrate %d not supported", path, cfg.Baudrate)
 	}
 	return nil, nil, nil
 }
