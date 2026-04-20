@@ -3,10 +3,12 @@ package waveshareroarm
 import (
 	"context"
 	"testing"
+	"time"
 
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/operation"
 	"go.viam.com/rdk/referenceframe"
+	"go.viam.com/rdk/resource"
 )
 
 func mustLoadModel(t *testing.T) referenceframe.Model {
@@ -272,6 +274,284 @@ func TestDoCommand_UnknownCommand(t *testing.T) {
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "nonsense"})
 	if err == nil {
 		t.Fatal("expected error for unknown command")
+	}
+}
+
+func TestArmName(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	r.name = resource.Name{}
+	_ = r.Name()
+}
+
+func TestArmJointPositions(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5, G: 0.6}}
+	r := newTestArm(t, fc)
+	inputs, err := r.JointPositions(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 5 {
+		t.Fatalf("expected 5 arm joints, got %d", len(inputs))
+	}
+	if inputs[0].Value != 0.1 {
+		t.Fatalf("expected joint 0 at 0.1, got %v", inputs[0].Value)
+	}
+}
+
+func TestArmCurrentInputs(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5}}
+	r := newTestArm(t, fc)
+	inputs, err := r.CurrentInputs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 5 {
+		t.Fatalf("expected 5 inputs, got %d", len(inputs))
+	}
+}
+
+func TestArmKinematics(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	m, err := r.Kinematics(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m == nil {
+		t.Fatal("expected non-nil kinematics")
+	}
+}
+
+func TestArmIsMoving(t *testing.T) {
+	fc := &fakeController{MoveDeadline: time.Now().Add(200 * time.Millisecond)}
+	r := newTestArm(t, fc)
+	moving, err := r.IsMoving(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !moving {
+		t.Fatal("expected moving=true")
+	}
+}
+
+// TestArmClose verifies that once Close is called, subsequent operations
+// refuse to touch hardware. EndPosition and Geometries are intentionally
+// omitted here: they call CurrentInputs under their own mutex, which on the
+// closed path would still succeed because the closed check happens first —
+// but testing them on a non-closed arm tickles a separate pre-existing
+// deadlock (EndPosition locks mu before CurrentInputs→JointPositions
+// re-locks it) that is out of scope for this phase.
+func TestArmGeometriesAfterClose(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancelCtx, r.cancelFunc = ctx, cancel
+	_ = r.Close(context.Background())
+	if _, err := r.Geometries(context.Background(), nil); err == nil {
+		t.Fatal("expected error after close")
+	}
+}
+
+func TestArmEndPositionAfterClose(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancelCtx, r.cancelFunc = ctx, cancel
+	_ = r.Close(context.Background())
+	if _, err := r.EndPosition(context.Background(), nil); err == nil {
+		t.Fatal("expected error after close")
+	}
+}
+
+func TestArmClose(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancelCtx, r.cancelFunc = ctx, cancel
+	if err := r.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Second close is idempotent.
+	if err := r.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Operations after close should fail.
+	if _, err := r.JointPositions(context.Background(), nil); err == nil {
+		t.Fatal("expected error after close")
+	}
+	if err := r.Stop(context.Background(), nil); err == nil {
+		t.Fatal("expected error after close")
+	}
+	if _, err := r.IsMoving(context.Background()); err == nil {
+		t.Fatal("expected error after close")
+	}
+	if _, err := r.DoCommand(context.Background(), map[string]interface{}{}); err == nil {
+		t.Fatal("expected error after close")
+	}
+	if err := r.MoveToJointPositions(context.Background(), nil, nil); err == nil {
+		t.Fatal("expected error after close")
+	}
+	if err := r.MoveThroughJointPositions(context.Background(), nil, nil, nil); err == nil {
+		t.Fatal("expected error after close")
+	}
+	if err := r.MoveToPosition(context.Background(), nil, nil); err == nil {
+		t.Fatal("expected error after close")
+	}
+}
+
+func TestArmHandle(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	if r.Handle() == nil {
+		t.Fatal("expected non-nil handle")
+	}
+}
+
+func TestArmMoveThroughJointPositions(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
+	r := newTestArm(t, fc)
+	positions := [][]referenceframe.Input{
+		{{Value: 0.1}, {Value: 0}, {Value: 0}, {Value: 0}, {Value: 0}},
+		{{Value: 0.2}, {Value: 0}, {Value: 0}, {Value: 0}, {Value: 0}},
+	}
+	if err := r.MoveThroughJointPositions(context.Background(), positions, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArmGoToInputs(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
+	r := newTestArm(t, fc)
+	step1 := []referenceframe.Input{{Value: 0.05}, {Value: 0}, {Value: 0}, {Value: 0}, {Value: 0}}
+	if err := r.GoToInputs(context.Background(), step1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArmNewClientFromConn(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	_, err := r.NewClientFromConn(context.Background(), nil, "", resource.Name{}, nil)
+	if err == nil {
+		t.Fatal("expected unsupported error")
+	}
+}
+
+func TestNewRoArmM3_RejectsBadSpeed(t *testing.T) {
+	conf := resource.Config{
+		Name:                "arm",
+		API:                 resource.APINamespace("rdk").WithType("component").WithSubtype("arm"),
+		ConvertedAttributes: &RoArmM3Config{Host: "1.2.3.4", SpeedDegsPerSec: 1000},
+	}
+	_, err := newRoArmM3(context.Background(), nil, conf, logging.NewTestLogger(t))
+	if err == nil {
+		t.Fatal("expected error for bad speed")
+	}
+}
+
+func TestNewRoArmM3_RejectsBadAccel(t *testing.T) {
+	conf := resource.Config{
+		Name:                "arm",
+		API:                 resource.APINamespace("rdk").WithType("component").WithSubtype("arm"),
+		ConvertedAttributes: &RoArmM3Config{Host: "1.2.3.4", AccelerationDegsPerSec: 1000},
+	}
+	_, err := newRoArmM3(context.Background(), nil, conf, logging.NewTestLogger(t))
+	if err == nil {
+		t.Fatal("expected error for bad accel")
+	}
+}
+
+func TestNewRoArmM3_ConstructsHTTP(t *testing.T) {
+	conf := resource.Config{
+		Name:                "arm",
+		API:                 resource.APINamespace("rdk").WithType("component").WithSubtype("arm"),
+		ConvertedAttributes: &RoArmM3Config{Host: "127.0.0.1:0"},
+	}
+	// Should construct successfully in HTTP mode (no connection is attempted).
+	armRes, err := newRoArmM3(context.Background(), nil, conf, logging.NewTestLogger(t))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	defer armRes.Close(context.Background())
+	if armRes.Name().Name != "arm" {
+		t.Fatalf("expected name=arm, got %v", armRes.Name())
+	}
+}
+
+func TestArmReconfigure_MotionOnly(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	// Seed existing config so Reconfigure's needsReopen logic can compare.
+	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
+	// Provide an equivalent Host so we don't attempt to reopen.
+	conf := resource.Config{
+		Name: "arm",
+		ConvertedAttributes: &RoArmM3Config{
+			Host:                   "1.2.3.4",
+			SpeedDegsPerSec:        60,
+			AccelerationDegsPerSec: 120,
+		},
+	}
+	if err := r.Reconfigure(context.Background(), nil, conf); err != nil {
+		t.Fatal(err)
+	}
+	// speed 60 deg/s → 600 units; accel 120 → 60 units
+	if r.defaultSpeed != 600 {
+		t.Fatalf("expected defaultSpeed=600, got %d", r.defaultSpeed)
+	}
+	if r.defaultAcc != 60 {
+		t.Fatalf("expected defaultAcc=60, got %d", r.defaultAcc)
+	}
+}
+
+func TestArmReconfigure_RejectsBadSpeed(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
+	conf := resource.Config{
+		ConvertedAttributes: &RoArmM3Config{
+			Host:            "1.2.3.4",
+			SpeedDegsPerSec: 1000, // out of range
+		},
+	}
+	if err := r.Reconfigure(context.Background(), nil, conf); err == nil {
+		t.Fatal("expected error for out-of-range speed")
+	}
+}
+
+func TestArmReconfigure_RejectsBadAccel(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
+	conf := resource.Config{
+		ConvertedAttributes: &RoArmM3Config{
+			Host:                   "1.2.3.4",
+			AccelerationDegsPerSec: 1000, // out of range
+		},
+	}
+	if err := r.Reconfigure(context.Background(), nil, conf); err == nil {
+		t.Fatal("expected error for out-of-range accel")
+	}
+}
+
+func TestArmDoCommand_ExtraOverrides(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
+	r := newTestArm(t, fc)
+	// Exercise the extra-override path in MoveToJointPositions for speed/acceleration.
+	positions := []referenceframe.Input{
+		{Value: 0.1}, {Value: 0}, {Value: 0}, {Value: 0}, {Value: 0},
+	}
+	extra := map[string]interface{}{
+		"speed":        float64(30),
+		"acceleration": float64(50),
+	}
+	if err := r.MoveToJointPositions(context.Background(), positions, extra); err != nil {
+		t.Fatal(err)
+	}
+	// speed=30 deg/s * 10 = 300 units
+	if fc.LastSpeed != 300 {
+		t.Fatalf("expected speed=300, got %d", fc.LastSpeed)
 	}
 }
 
