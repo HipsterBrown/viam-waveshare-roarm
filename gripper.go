@@ -2,12 +2,13 @@ package waveshareroarm
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
 	"go.viam.com/rdk/logging"
@@ -58,7 +59,8 @@ type roarmM3Gripper struct {
 	opMgr      *operation.SingleOperationManager
 
 	// State management
-	mu sync.Mutex
+	mu      sync.Mutex
+	holding atomic.Bool
 }
 
 func init() {
@@ -115,6 +117,7 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	if err != nil {
 		return fmt.Errorf("failed to open gripper: %w", err)
 	}
+	g.holding.Store(false)
 
 	// Refine the motion tracker deadline with the gripper-specific estimate.
 	g.controller.NoteMotionDeadline(time.Now().Add(1 * time.Second))
@@ -169,6 +172,8 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	gripperRad := radians[5]
 	// If we couldn't fully close to the lower limit, something is in the way.
 	grabbed := gripperRad > gripperGrabRad+0.05 // ~3 degree margin
+
+	g.holding.Store(grabbed)
 
 	if grabbed {
 		g.logger.Debug("Gripper successfully grabbed an object")
@@ -335,11 +340,17 @@ func (g *roarmM3Gripper) DoCommand(ctx context.Context, cmd map[string]interface
 }
 
 func (g *roarmM3Gripper) Geometries(ctx context.Context, _ map[string]interface{}) ([]spatialmath.Geometry, error) {
-	return nil, errors.ErrUnsupported
+	// ~70mm wide, 40mm tall, 60mm deep jaw envelope, offset 30mm beyond the wrist.
+	offset := spatialmath.NewPoseFromPoint(r3.Vector{X: 0, Y: 0, Z: 30})
+	box, err := spatialmath.NewBox(offset, r3.Vector{X: 70, Y: 40, Z: 60}, "gripper-box")
+	if err != nil {
+		return nil, err
+	}
+	return []spatialmath.Geometry{box}, nil
 }
 
 func (g *roarmM3Gripper) IsHoldingSomething(ctx context.Context, _ map[string]interface{}) (gripper.HoldingStatus, error) {
-	return gripper.HoldingStatus{}, errors.ErrUnsupported
+	return gripper.HoldingStatus{IsHoldingSomething: g.holding.Load()}, nil
 }
 
 func (g *roarmM3Gripper) Kinematics(ctx context.Context) (referenceframe.Model, error) {
