@@ -1,6 +1,7 @@
 package waveshareroarm
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +39,41 @@ func TestArmConfigAcceptsSplitTimeouts(t *testing.T) {
 	_, _, err := cfg.Validate("arms.0")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestArmValidateRejectsBothHostAndPort(t *testing.T) {
+	cfg := &RoArmM3Config{Host: "1.2.3.4", Port: "/dev/ttyUSB0"}
+	_, _, err := cfg.Validate("arms.0")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestArmValidateRejectsNeither(t *testing.T) {
+	cfg := &RoArmM3Config{}
+	_, _, err := cfg.Validate("arms.0")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestArmValidateAcceptsHTTPConfig(t *testing.T) {
+	cfg := &RoArmM3Config{Host: "1.2.3.4"}
+	_, _, err := cfg.Validate("arms.0")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+}
+
+func TestArmValidateErrorIncludesPath(t *testing.T) {
+	cfg := &RoArmM3Config{}
+	_, _, err := cfg.Validate("my.path.0")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "my.path.0") {
+		t.Fatalf("expected path in error, got: %v", err)
 	}
 }
 
