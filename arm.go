@@ -235,6 +235,9 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	r.isMoving.Store(true)
 	defer r.isMoving.Store(false)
 
+	ctx, done := r.opMgr.New(ctx)
+	defer done()
+
 	if len(positions) != 5 {
 		return fmt.Errorf("expected 5 joint positions for arm, got %d", len(positions))
 	}
@@ -333,7 +336,11 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	}
 
 	// Wait for movement to complete
-	time.Sleep(time.Duration(moveTimeSeconds * float64(time.Second)))
+	select {
+	case <-time.After(time.Duration(moveTimeSeconds * float64(time.Second))):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	return nil
 }
@@ -378,10 +385,17 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 }
 
 func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error {
-	r.isMoving.Store(false)
-	// Note: The RoArm controller doesn't have a direct stop command
-	// Movement will complete, but we mark as not moving
-	return nil
+	r.opMgr.CancelRunning(ctx)
+
+	current, err := r.controller.GetJointRadians(ctx)
+	if err != nil {
+		return fmt.Errorf("stop: read current positions: %w", err)
+	}
+	if len(current) < 6 {
+		return fmt.Errorf("stop: short feedback from controller (got %d joints)", len(current))
+	}
+	const stopSpeed = 100 // internal units, ~10 deg/s — gentle soft stop
+	return r.controller.SetJointRadians(ctx, current, stopSpeed, r.defaultAcc)
 }
 
 func (r *roarmM3) Kinematics(ctx context.Context) (referenceframe.Model, error) {

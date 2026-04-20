@@ -12,6 +12,7 @@ import (
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
 	"go.viam.com/rdk/logging"
+	"go.viam.com/rdk/operation"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/spatialmath"
@@ -55,6 +56,7 @@ type roarmM3Gripper struct {
 	logger     logging.Logger
 	controller RoArmHandle
 	model      referenceframe.Model
+	opMgr      *operation.SingleOperationManager
 
 	// State management
 	mu       sync.Mutex
@@ -92,6 +94,7 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		logger:     logger,
 		controller: handle,
 		model:      referenceframe.NewSimpleModel("roarm_m3_gripper"),
+		opMgr:      operation.NewSingleOperationManager(),
 	}
 
 	return g, nil
@@ -106,6 +109,9 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	ctx, done := g.opMgr.New(ctx)
+	defer done()
+
 	g.isMoving.Store(true)
 	defer g.isMoving.Store(false)
 
@@ -116,7 +122,11 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	}
 
 	// Wait for movement to complete
-	time.Sleep(1 * time.Second)
+	select {
+	case <-time.After(1 * time.Second):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	g.logger.Debug("Gripper opened")
 	return nil
@@ -126,6 +136,9 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{}) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	ctx, done := g.opMgr.New(ctx)
+	defer done()
 
 	g.isMoving.Store(true)
 	defer g.isMoving.Store(false)
@@ -137,7 +150,11 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	}
 
 	// Wait for movement to complete
-	time.Sleep(1 * time.Second)
+	select {
+	case <-time.After(1 * time.Second):
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 
 	// Check if something was grabbed by reading the gripper position.
 	// If the gripper couldn't fully close to the lower limit, it likely
@@ -166,11 +183,15 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 
 // Stop stops the gripper movement
 func (g *roarmM3Gripper) Stop(ctx context.Context, extra map[string]interface{}) error {
-	g.isMoving.Store(false)
-	// The RoArm controller doesn't have a direct stop command
-	// Movement will complete, but we mark as not moving
-	g.logger.Debug("Gripper stop requested")
-	return nil
+	g.opMgr.CancelRunning(ctx)
+	positions, err := g.controller.GetJointRadians(ctx)
+	if err != nil {
+		return fmt.Errorf("gripper stop: read position: %w", err)
+	}
+	if len(positions) < 6 {
+		return fmt.Errorf("gripper stop: short feedback (got %d joints)", len(positions))
+	}
+	return g.controller.SetJointRadian(ctx, 6, positions[5], 100, 50)
 }
 
 // IsMoving returns whether the gripper is currently moving
@@ -208,6 +229,9 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	ctx, done := g.opMgr.New(ctx)
+	defer done()
+
 	g.isMoving.Store(true)
 	defer g.isMoving.Store(false)
 
@@ -225,7 +249,11 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 		moveTime = 100 * time.Millisecond
 	}
 
-	time.Sleep(moveTime)
+	select {
+	case <-time.After(moveTime):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	return nil
 }
