@@ -455,7 +455,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 				"base":     feedback.B,
 				"shoulder": feedback.S,
 				"elbow":    feedback.E,
-				"wrist":    feedback.T_,
+				"wrist":    feedback.Wrist,
 				"roll":     feedback.R,
 				"gripper":  feedback.G,
 			},

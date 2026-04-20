@@ -82,7 +82,7 @@ type FeedbackData struct {
 	B   float64 `json:"b"`   // Joint 1 (base)
 	S   float64 `json:"s"`   // Joint 2 (shoulder)
 	E   float64 `json:"e"`   // Joint 3 (elbow)
-	T_  float64 `json:"t"`   // Joint 4 (wrist)
+	Wrist float64 `json:"t"` // Joint 4 (wrist)
 	R   float64 `json:"r"`   // Joint 5 (roll)
 	G   float64 `json:"g"`   // Joint 6 (gripper)
 	TB  float64 `json:"tB"`  // Torque Joint 1
@@ -597,7 +597,7 @@ func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error
 		feedback.B,  // Joint 1
 		feedback.S,  // Joint 2
 		feedback.E,  // Joint 3
-		feedback.T_, // Joint 4
+		feedback.Wrist, // Joint 4
 		feedback.R,  // Joint 5
 		feedback.G,  // Joint 6 (gripper) - no transformation applied (see plan task 2.5)
 	}
