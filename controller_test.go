@@ -92,6 +92,28 @@ func TestParseLastJSONFrame_Empty(t *testing.T) {
 	}
 }
 
+func TestAcceptableResponseTs_FeedbackGet(t *testing.T) {
+	accept := acceptableResponseTs(FEEDBACK_GET)
+	if accept == nil {
+		t.Fatal("expected non-nil for FEEDBACK_GET")
+	}
+	if !accept[1051] {
+		t.Fatal("expected 1051 accepted")
+	}
+	if !accept[FEEDBACK_GET] {
+		t.Fatal("expected FEEDBACK_GET accepted")
+	}
+	if accept[999] {
+		t.Fatal("999 should not be accepted")
+	}
+}
+
+func TestAcceptableResponseTs_UnknownCommand_AcceptsAll(t *testing.T) {
+	if acceptableResponseTs(999) != nil {
+		t.Fatal("expected nil (accept-any) for unknown command")
+	}
+}
+
 func TestCommandMarshalJSON_NilData(t *testing.T) {
 	cmd := &Command{T: FEEDBACK_GET}
 	data, err := cmd.MarshalJSON()
