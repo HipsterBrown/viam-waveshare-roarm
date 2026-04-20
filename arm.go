@@ -82,7 +82,7 @@ type roarmM3 struct {
 	logger     logging.Logger
 	cfg        *RoArmM3Config
 	opMgr      *operation.SingleOperationManager
-	controller *RoArmController
+	controller RoArmHandle
 
 	mu          sync.Mutex
 	model       referenceframe.Model
