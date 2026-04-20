@@ -660,8 +660,3 @@ func (c *RoArmController) TestConnection(ctx context.Context) error {
 	c.logger.Debug("Connection test successful")
 	return nil
 }
-
-// GetAvailableSerialPorts returns a list of available serial ports
-func GetAvailableSerialPorts() ([]string, error) {
-	return serial.GetPortsList()
-}
