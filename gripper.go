@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.viam.com/rdk/components/arm"
@@ -59,8 +58,7 @@ type roarmM3Gripper struct {
 	opMgr      *operation.SingleOperationManager
 
 	// State management
-	mu       sync.Mutex
-	isMoving atomic.Bool
+	mu sync.Mutex
 }
 
 func init() {
@@ -112,14 +110,14 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	g.isMoving.Store(true)
-	defer g.isMoving.Store(false)
-
 	// Open position: joint-6 upper limit (fully open).
 	err := g.controller.SetJointRadian(ctx, 6, gripperOpenRad, 500, 50)
 	if err != nil {
 		return fmt.Errorf("failed to open gripper: %w", err)
 	}
+
+	// Refine the motion tracker deadline with the gripper-specific estimate.
+	g.controller.NoteMotionDeadline(time.Now().Add(1 * time.Second))
 
 	// Wait for movement to complete
 	select {
@@ -140,14 +138,14 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	g.isMoving.Store(true)
-	defer g.isMoving.Store(false)
-
 	// Grab position: joint-6 lower limit (fully closed).
 	err := g.controller.SetJointRadian(ctx, 6, gripperGrabRad, 500, 50)
 	if err != nil {
 		return false, fmt.Errorf("failed to grab with gripper: %w", err)
 	}
+
+	// Refine the motion tracker deadline with the gripper-specific estimate.
+	g.controller.NoteMotionDeadline(time.Now().Add(1 * time.Second))
 
 	// Wait for movement to complete
 	select {
@@ -196,7 +194,7 @@ func (g *roarmM3Gripper) Stop(ctx context.Context, extra map[string]interface{})
 
 // IsMoving returns whether the gripper is currently moving
 func (g *roarmM3Gripper) IsMoving(ctx context.Context) (bool, error) {
-	return g.isMoving.Load(), nil
+	return g.controller.IsMoving(ctx)
 }
 
 // ModelFrame returns the reference frame model for the gripper
@@ -232,9 +230,6 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	g.isMoving.Store(true)
-	defer g.isMoving.Store(false)
-
 	radians := angleDegrees * math.Pi / 180.0
 	if err := g.controller.SetJointRadian(ctx, 6, radians, speed, acc); err != nil {
 		return fmt.Errorf("failed to set gripper position: %w", err)
@@ -248,6 +243,9 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 	if moveTime < 100*time.Millisecond {
 		moveTime = 100 * time.Millisecond
 	}
+
+	// Refine the motion tracker deadline with this per-move estimate.
+	g.controller.NoteMotionDeadline(time.Now().Add(moveTime))
 
 	select {
 	case <-time.After(moveTime):

@@ -103,6 +103,7 @@ type RoArmController struct {
 	isHTTP        bool
 	httpTimeout   time.Duration
 	serialTimeout time.Duration
+	tracker       *motionTracker
 }
 
 // RoArmConfig represents the configuration for the RoArm controller
@@ -126,6 +127,7 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 		httpTimeout:   DefaultHTTPTimeout,
 		serialTimeout: DefaultSerialTimeout,
 		logger:        config.Logger,
+		tracker:       newMotionTracker(),
 	}
 
 	// Use default logger if none provided
@@ -213,6 +215,28 @@ func keysOf(m map[int]bool) []int {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// motionTracker records when the controller expects an in-flight motion
+// to complete. IsMoving reads this deadline to tell callers whether the
+// arm is still moving without requiring a round-trip to hardware.
+type motionTracker struct {
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func newMotionTracker() *motionTracker { return &motionTracker{} }
+
+func (m *motionTracker) recordMove(deadline time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deadline = deadline
+}
+
+func (m *motionTracker) isMoving(now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return now.Before(m.deadline)
 }
 
 // sendCommand sends a command to the RoArm and returns the response
@@ -395,6 +419,38 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 	}
 }
 
+// IsMoving returns true if the controller believes a motion is still in flight
+// (i.e. the estimated completion deadline hasn't passed).
+func (c *RoArmController) IsMoving(ctx context.Context) (bool, error) {
+	return c.tracker.isMoving(time.Now()), nil
+}
+
+// NoteMotionDeadline records that a motion is expected to complete no later
+// than the given time. Called by higher-level resources that have better
+// information about motion duration than the controller.
+func (c *RoArmController) NoteMotionDeadline(deadline time.Time) {
+	c.tracker.recordMove(deadline)
+}
+
+// estimateMoveDeadline returns a conservative upper-bound deadline for a move
+// at the given firmware speed, used when the caller does not supply a better
+// estimate via NoteMotionDeadline.
+func estimateMoveDeadline(now time.Time, speed int) time.Time {
+	radPerSec := float64(speed) / 10.0 * math.Pi / 180.0
+	if radPerSec <= 0 {
+		radPerSec = 1 // defensive
+	}
+	const worstCaseRad = 2 * math.Pi
+	estimated := time.Duration(worstCaseRad/radPerSec) * time.Second
+	if estimated < 100*time.Millisecond {
+		estimated = 100 * time.Millisecond
+	}
+	if estimated > 10*time.Second {
+		estimated = 10 * time.Second
+	}
+	return now.Add(estimated)
+}
+
 // SetTorque enables or disables torque for all joints
 func (c *RoArmController) SetTorque(ctx context.Context, enable bool) error {
 	cmd := &Command{
@@ -466,8 +522,14 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 		},
 	}
 
-	_, err := c.sendCommand(ctx, cmd)
-	return err
+	if _, err := c.sendCommand(ctx, cmd); err != nil {
+		return err
+	}
+
+	// Record a conservative fallback deadline. Callers with better
+	// information should call NoteMotionDeadline to refine it.
+	c.tracker.recordMove(estimateMoveDeadline(time.Now(), speed))
+	return nil
 }
 
 // SetJointRadians moves all joints to the specified radian positions
@@ -507,8 +569,14 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 		},
 	}
 
-	_, err := c.sendCommand(ctx, cmd)
-	return err
+	if _, err := c.sendCommand(ctx, cmd); err != nil {
+		return err
+	}
+
+	// Record a conservative fallback deadline. Callers with better
+	// information should call NoteMotionDeadline to refine it.
+	c.tracker.recordMove(estimateMoveDeadline(time.Now(), speed))
+	return nil
 }
 
 // GetJointRadians returns the current joint positions in radians

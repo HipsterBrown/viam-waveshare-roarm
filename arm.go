@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -82,8 +81,6 @@ type roarmM3 struct {
 	controller *RoArmController
 
 	mu          sync.RWMutex
-	moveLock    sync.Mutex
-	isMoving    atomic.Bool
 	model       referenceframe.Model
 	jointLimits [][2]float64
 
@@ -229,12 +226,6 @@ func (r *roarmM3) MoveToPosition(ctx context.Context, pose spatialmath.Pose, ext
 }
 
 func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenceframe.Input, extra map[string]interface{}) error {
-	r.moveLock.Lock()
-	defer r.moveLock.Unlock()
-
-	r.isMoving.Store(true)
-	defer r.isMoving.Store(false)
-
 	ctx, done := r.opMgr.New(ctx)
 	defer done()
 
@@ -335,9 +326,15 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 		moveTimeSeconds = 10.0 // Maximum move time for safety
 	}
 
+	// Refine the motion tracker deadline with our better per-move estimate so
+	// IsMoving reflects reality more closely than the controller's worst-case
+	// fallback.
+	moveDuration := time.Duration(moveTimeSeconds * float64(time.Second))
+	r.controller.NoteMotionDeadline(time.Now().Add(moveDuration))
+
 	// Wait for movement to complete
 	select {
-	case <-time.After(time.Duration(moveTimeSeconds * float64(time.Second))):
+	case <-time.After(moveDuration):
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -529,7 +526,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 }
 
 func (r *roarmM3) IsMoving(ctx context.Context) (bool, error) {
-	return r.isMoving.Load(), nil
+	return r.controller.IsMoving(ctx)
 }
 
 func (r *roarmM3) Geometries(ctx context.Context, extra map[string]interface{}) ([]spatialmath.Geometry, error) {
