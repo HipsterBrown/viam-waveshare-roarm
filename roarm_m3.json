@@ -55,7 +55,7 @@
           "y": 0,
           "z": 1
         },
-        "id": "link4_to_gipper",
+        "id": "link4_to_gripper",
         "max": 180.0004209182994,
         "min": -180.0004209182994,
         "parent": "link4",
@@ -72,17 +72,17 @@
           "r": 0,
           "l": 0,
           "translation": {
-            "X": 130,
-            "Y": 0,
-            "Z": 0
+            "x": 130,
+            "y": 0,
+            "z": 0
           },
           "orientation": {
             "type": "quaternion",
             "value": {
               "W": 1,
-              "X": 0,
-              "Y": 0,
-              "Z": 0
+              "x": 0,
+              "y": 0,
+              "z": 0
             }
           },
           "Label": ""
@@ -112,17 +112,17 @@
           "r": 0,
           "l": 0,
           "translation": {
-            "X": 0,
-            "Y": -27.5,
-            "Z": 0
+            "x": 0,
+            "y": -27.5,
+            "z": 0
           },
           "orientation": {
             "type": "quaternion",
             "value": {
               "W": 1,
-              "X": 0,
-              "Y": 0,
-              "Z": 0
+              "x": 0,
+              "y": 0,
+              "z": 0
             }
           },
           "Label": ""
@@ -152,17 +152,17 @@
           "r": 0,
           "l": 0,
           "translation": {
-            "X": 0,
-            "Y": 0,
-            "Z": 32.5
+            "x": 0,
+            "y": 0,
+            "z": 32.5
           },
           "orientation": {
             "type": "quaternion",
             "value": {
               "W": 1,
-              "X": 0,
-              "Y": 0,
-              "Z": 0
+              "x": 0,
+              "y": 0,
+              "z": 0
             }
           },
           "Label": ""
@@ -192,17 +192,17 @@
           "r": 0,
           "l": 0,
           "translation": {
-            "X": 0,
-            "Y": -85,
-            "Z": 0
+            "x": 0,
+            "y": -85,
+            "z": 0
           },
           "orientation": {
             "type": "quaternion",
             "value": {
               "W": 1,
-              "X": 0,
-              "Y": 0,
-              "Z": 0
+              "x": 0,
+              "y": 0,
+              "z": 0
             }
           },
           "Label": ""
@@ -232,17 +232,17 @@
           "r": 0,
           "l": 0,
           "translation": {
-            "X": 0,
-            "Y": 0,
-            "Z": 35
+            "x": 0,
+            "y": 0,
+            "z": 35
           },
           "orientation": {
             "type": "quaternion",
             "value": {
               "W": 1,
-              "X": 0,
-              "Y": 0,
-              "Z": 0
+              "x": 0,
+              "y": 0,
+              "z": 0
             }
           },
           "Label": ""
@@ -258,9 +258,9 @@
         },
         "parent": "world",
         "translation": {
-          "X": 0,
-          "Y": 0,
-          "Z": 70
+          "x": 0,
+          "y": 0,
+          "z": 70
         }
       }
     ]

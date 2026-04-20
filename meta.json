@@ -14,7 +14,7 @@
     {
       "api": "rdk:component:gripper",
       "model": "hipsterbrown:waveshare-roarm:gripper",
-      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "short_description": "Control the parallel gripper (joint 6) of the RoArm-M3 5-DOF+gripper arm",
       "markdown_link": "README.md#model-hipsterbrownwaveshare-roarmgripper"
     }
   ],
