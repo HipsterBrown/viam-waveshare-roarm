@@ -201,7 +201,7 @@ func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{})
 		return nil, err
 	}
 
-	pose, err := referenceframe.ComputeOOBPosition(r.model, inputs)
+	pose, err := r.model.Transform(inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute end position: %w", err)
 	}
