@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -23,6 +24,8 @@ import (
 
 var (
 	RoArmM3 = resource.NewModel("hipsterbrown", "waveshare-roarm", "arm")
+
+	errClosed = stdlib_errors.New("arm closed")
 )
 
 //go:embed roarm_m3.json
@@ -88,6 +91,8 @@ type roarmM3 struct {
 	// Motion configuration
 	defaultSpeed int
 	defaultAcc   int
+
+	closed atomic.Bool
 
 	cancelCtx  context.Context
 	cancelFunc func()
@@ -193,6 +198,9 @@ func (r *roarmM3) NewClientFromConn(ctx context.Context, conn rpc.ClientConn, re
 }
 
 func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{}) (spatialmath.Pose, error) {
+	if r.closed.Load() {
+		return nil, errClosed
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -210,6 +218,9 @@ func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{})
 }
 
 func (r *roarmM3) MoveToPosition(ctx context.Context, pose spatialmath.Pose, extra map[string]interface{}) error {
+	if r.closed.Load() {
+		return errClosed
+	}
 	if err := motion.MoveArm(ctx, r.logger, r, pose); err != nil {
 		return err
 	}
@@ -217,6 +228,9 @@ func (r *roarmM3) MoveToPosition(ctx context.Context, pose spatialmath.Pose, ext
 }
 
 func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenceframe.Input, extra map[string]interface{}) error {
+	if r.closed.Load() {
+		return errClosed
+	}
 	ctx, done := r.opMgr.New(ctx)
 	defer done()
 
@@ -327,6 +341,9 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 }
 
 func (r *roarmM3) MoveThroughJointPositions(ctx context.Context, positions [][]referenceframe.Input, options *arm.MoveOptions, extra map[string]interface{}) error {
+	if r.closed.Load() {
+		return errClosed
+	}
 	for _, jointPositions := range positions {
 		if err := r.MoveToJointPositions(ctx, jointPositions, extra); err != nil {
 			return err
@@ -340,6 +357,9 @@ func (r *roarmM3) MoveThroughJointPositions(ctx context.Context, positions [][]r
 }
 
 func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface{}) ([]referenceframe.Input, error) {
+	if r.closed.Load() {
+		return nil, errClosed
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -366,6 +386,9 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 }
 
 func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error {
+	if r.closed.Load() {
+		return errClosed
+	}
 	r.opMgr.CancelRunning(ctx)
 
 	current, err := r.controller.GetJointRadians(ctx)
@@ -392,6 +415,9 @@ func (r *roarmM3) GoToInputs(ctx context.Context, inputSteps ...[]referenceframe
 }
 
 func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	if r.closed.Load() {
+		return nil, errClosed
+	}
 	// Handle custom commands specific to RoArm
 	switch cmd["command"] {
 	case "set_torque":
@@ -501,10 +527,16 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 }
 
 func (r *roarmM3) IsMoving(ctx context.Context) (bool, error) {
+	if r.closed.Load() {
+		return false, errClosed
+	}
 	return r.controller.IsMoving(ctx)
 }
 
 func (r *roarmM3) Geometries(ctx context.Context, extra map[string]interface{}) ([]spatialmath.Geometry, error) {
+	if r.closed.Load() {
+		return nil, errClosed
+	}
 	inputs, err := r.CurrentInputs(ctx)
 	if err != nil {
 		return nil, err
@@ -517,7 +549,13 @@ func (r *roarmM3) Geometries(ctx context.Context, extra map[string]interface{}) 
 }
 
 func (r *roarmM3) Close(ctx context.Context) error {
+	if !r.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 	r.cancelFunc()
+	r.opMgr.CancelRunning(ctx)
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.controller != nil {
 		return r.controller.Close(ctx)
 	}

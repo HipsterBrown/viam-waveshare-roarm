@@ -2,6 +2,7 @@ package waveshareroarm
 
 import (
 	"context"
+	stdlib_errors "errors"
 	"fmt"
 	"math"
 	"sync"
@@ -61,7 +62,10 @@ type roarmM3Gripper struct {
 	// State management
 	mu      sync.Mutex
 	holding atomic.Bool
+	closed  atomic.Bool
 }
+
+var errGripperClosed = stdlib_errors.New("gripper closed")
 
 func init() {
 	resource.RegisterComponent(
@@ -106,6 +110,9 @@ func (g *roarmM3Gripper) Name() resource.Name {
 
 // Open opens the gripper (sets to 100 degrees - fully open)
 func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{}) error {
+	if g.closed.Load() {
+		return errGripperClosed
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -135,6 +142,9 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 
 // Grab closes the gripper to grab an object (sets to -10 degrees - fully closed)
 func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{}) (bool, error) {
+	if g.closed.Load() {
+		return false, errGripperClosed
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -186,6 +196,9 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 
 // Stop stops the gripper movement
 func (g *roarmM3Gripper) Stop(ctx context.Context, extra map[string]interface{}) error {
+	if g.closed.Load() {
+		return errGripperClosed
+	}
 	g.opMgr.CancelRunning(ctx)
 	positions, err := g.controller.GetJointRadians(ctx)
 	if err != nil {
@@ -199,6 +212,9 @@ func (g *roarmM3Gripper) Stop(ctx context.Context, extra map[string]interface{})
 
 // IsMoving returns whether the gripper is currently moving
 func (g *roarmM3Gripper) IsMoving(ctx context.Context) (bool, error) {
+	if g.closed.Load() {
+		return false, errGripperClosed
+	}
 	return g.controller.IsMoving(ctx)
 }
 
@@ -212,6 +228,9 @@ func (g *roarmM3Gripper) ModelFrame() referenceframe.Model {
 // GetPosition returns the current gripper position in degrees (-10 to 100).
 // Reads the 6th joint radian from the shared controller and converts.
 func (g *roarmM3Gripper) GetPosition(ctx context.Context) (float64, error) {
+	if g.closed.Load() {
+		return 0, errGripperClosed
+	}
 	radians, err := g.controller.GetJointRadians(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read gripper position: %w", err)
@@ -225,6 +244,9 @@ func (g *roarmM3Gripper) GetPosition(ctx context.Context) (float64, error) {
 // SetPosition sets the gripper to a specific position (-10 to 100 degrees).
 // Internally this commands joint 6 directly via the narrow handle.
 func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, speed, acc int) error {
+	if g.closed.Load() {
+		return errGripperClosed
+	}
 	if angleDegrees < -10 || angleDegrees > 100 {
 		return fmt.Errorf("gripper angle must be between -10 and 100 degrees, got %.1f", angleDegrees)
 	}
@@ -263,11 +285,18 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 
 // Close releases any gripper-local resources. The underlying controller is
 // owned by the arm and must not be closed here.
-func (g *roarmM3Gripper) Close(context.Context) error {
+func (g *roarmM3Gripper) Close(ctx context.Context) error {
+	if !g.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	g.opMgr.CancelRunning(ctx)
 	return nil
 }
 
 func (g *roarmM3Gripper) CurrentInputs(ctx context.Context) ([]referenceframe.Input, error) {
+	if g.closed.Load() {
+		return nil, errGripperClosed
+	}
 	position, err := g.GetPosition(ctx)
 	if err != nil {
 		return nil, err
@@ -282,6 +311,9 @@ func (g *roarmM3Gripper) CurrentInputs(ctx context.Context) ([]referenceframe.In
 }
 
 func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referenceframe.Input) error {
+	if g.closed.Load() {
+		return errGripperClosed
+	}
 	if len(inputs) == 0 {
 		return nil
 	}
@@ -307,6 +339,9 @@ func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referencefr
 }
 
 func (g *roarmM3Gripper) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	if g.closed.Load() {
+		return nil, errGripperClosed
+	}
 	switch cmd["command"] {
 	case "get_position":
 		position, err := g.GetPosition(ctx)
@@ -340,6 +375,9 @@ func (g *roarmM3Gripper) DoCommand(ctx context.Context, cmd map[string]interface
 }
 
 func (g *roarmM3Gripper) Geometries(ctx context.Context, _ map[string]interface{}) ([]spatialmath.Geometry, error) {
+	if g.closed.Load() {
+		return nil, errGripperClosed
+	}
 	// ~70mm wide, 40mm tall, 60mm deep jaw envelope, offset 30mm beyond the wrist.
 	offset := spatialmath.NewPoseFromPoint(r3.Vector{X: 0, Y: 0, Z: 30})
 	box, err := spatialmath.NewBox(offset, r3.Vector{X: 70, Y: 40, Z: 60}, "gripper-box")
@@ -350,6 +388,9 @@ func (g *roarmM3Gripper) Geometries(ctx context.Context, _ map[string]interface{
 }
 
 func (g *roarmM3Gripper) IsHoldingSomething(ctx context.Context, _ map[string]interface{}) (gripper.HoldingStatus, error) {
+	if g.closed.Load() {
+		return gripper.HoldingStatus{}, errGripperClosed
+	}
 	return gripper.HoldingStatus{IsHoldingSomething: g.holding.Load()}, nil
 }
 
