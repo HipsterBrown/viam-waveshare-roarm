@@ -198,6 +198,23 @@ func (c *RoArmController) Close(ctx context.Context) error {
 	return nil
 }
 
+// parseLastJSONFrame finds the last complete JSON frame in buf, delimited
+// by '{' and "}\r\n". Returns the JSON bytes (including the closing brace)
+// and true if a complete frame is present.
+func parseLastJSONFrame(buf []byte) (jsonData []byte, ok bool) {
+	frameStart := []byte("{")
+	frameEnd := []byte("}\r\n")
+	endIndex := bytes.LastIndex(buf, frameEnd)
+	if endIndex < 0 {
+		return nil, false
+	}
+	startIndex := bytes.LastIndex(buf[:endIndex], frameStart)
+	if startIndex < 0 || startIndex >= endIndex {
+		return nil, false
+	}
+	return buf[startIndex : endIndex+1], true
+}
+
 // acceptableResponseTs returns the set of response T values the firmware
 // is expected to send in reply to a given request T. A nil result means
 // accept any frame (fallback for commands whose response shape we don't
@@ -334,8 +351,6 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 	// Read response with proper frame detection (based on Python ReadLine class)
 	buffer := make([]byte, 256)
 	responseBuffer := bytes.Buffer{}
-	frameStart := []byte("{")
-	frameEnd := []byte("}\r\n")
 	maxFrameLength := 512
 	startTime := time.Now()
 
@@ -388,42 +403,32 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 		}
 
 		// Look for complete JSON frame
-		response := responseBuffer.Bytes()
-		endIndex := bytes.LastIndex(response, frameEnd)
-
-		if endIndex >= 0 {
-			// Find the start of the JSON object before the end
-			startIndex := bytes.LastIndex(response[:endIndex], frameStart)
-			if startIndex >= 0 && startIndex < endIndex {
-				// Extract the JSON data
-				jsonData := response[startIndex : endIndex+1] // Include the closing brace
-
-				if c.verboseWire {
-					c.logger.Debugf("Parsing JSON response: %s", string(jsonData))
-				}
-
-				var feedback FeedbackData
-				if err := json.Unmarshal(jsonData, &feedback); err != nil {
-					// Log the error but continue trying to read more data
-					c.logger.Warnf("Failed to unmarshal JSON response: %v, data: %s", err, string(jsonData))
-					// Clear the buffer and continue
-					responseBuffer.Reset()
-					continue
-				}
-
-				// Only accept response frames whose T matches what the firmware
-				// is expected to send for this request T. Stale streaming frames
-				// (e.g. unsolicited 1051 feedback) are dropped and we keep reading.
-				accept := acceptableResponseTs(requestT)
-				if accept != nil && !accept[feedback.T] {
-					c.logger.Warnf("dropping stale/unexpected response frame T=%d (wanted one of %v)",
-						feedback.T, keysOf(accept))
-					responseBuffer.Reset()
-					continue
-				}
-
-				return &feedback, nil
+		if jsonData, ok := parseLastJSONFrame(responseBuffer.Bytes()); ok {
+			if c.verboseWire {
+				c.logger.Debugf("Parsing JSON response: %s", string(jsonData))
 			}
+
+			var feedback FeedbackData
+			if err := json.Unmarshal(jsonData, &feedback); err != nil {
+				// Log the error but continue trying to read more data
+				c.logger.Warnf("Failed to unmarshal JSON response: %v, data: %s", err, string(jsonData))
+				// Clear the buffer and continue
+				responseBuffer.Reset()
+				continue
+			}
+
+			// Only accept response frames whose T matches what the firmware
+			// is expected to send for this request T. Stale streaming frames
+			// (e.g. unsolicited 1051 feedback) are dropped and we keep reading.
+			accept := acceptableResponseTs(requestT)
+			if accept != nil && !accept[feedback.T] {
+				c.logger.Warnf("dropping stale/unexpected response frame T=%d (wanted one of %v)",
+					feedback.T, keysOf(accept))
+				responseBuffer.Reset()
+				continue
+			}
+
+			return &feedback, nil
 		}
 	}
 }

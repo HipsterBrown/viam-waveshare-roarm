@@ -48,6 +48,50 @@ func TestCommandMarshalJSON_EmptyData(t *testing.T) {
 	}
 }
 
+func TestParseLastJSONFrame_SingleComplete(t *testing.T) {
+	data, ok := parseLastJSONFrame([]byte("{\"T\":1051,\"b\":0}\r\n"))
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if string(data) != `{"T":1051,"b":0}` {
+		t.Fatalf("got %q", string(data))
+	}
+}
+
+func TestParseLastJSONFrame_PartialFrame(t *testing.T) {
+	_, ok := parseLastJSONFrame([]byte(`{"T":1051,"b":0}`)) // no \r\n
+	if ok {
+		t.Fatal("expected not ok")
+	}
+}
+
+func TestParseLastJSONFrame_MultipleFrames_UsesLast(t *testing.T) {
+	data, ok := parseLastJSONFrame([]byte("{\"T\":1}\r\n{\"T\":2}\r\n"))
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if string(data) != `{"T":2}` {
+		t.Fatalf("got %q", string(data))
+	}
+}
+
+func TestParseLastJSONFrame_GarbagePrefix(t *testing.T) {
+	data, ok := parseLastJSONFrame([]byte("GARBAGE{\"T\":1}\r\n"))
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if string(data) != `{"T":1}` {
+		t.Fatalf("got %q", string(data))
+	}
+}
+
+func TestParseLastJSONFrame_Empty(t *testing.T) {
+	_, ok := parseLastJSONFrame([]byte(""))
+	if ok {
+		t.Fatal("expected not ok")
+	}
+}
+
 func TestCommandMarshalJSON_NilData(t *testing.T) {
 	cmd := &Command{T: FEEDBACK_GET}
 	data, err := cmd.MarshalJSON()
