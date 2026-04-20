@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -202,6 +203,28 @@ func (c *RoArmController) Close() error {
 	return nil
 }
 
+// acceptableResponseTs returns the set of response T values the firmware
+// is expected to send in reply to a given request T. A nil result means
+// accept any frame (fallback for commands whose response shape we don't
+// yet have documented).
+func acceptableResponseTs(requestT int) map[int]bool {
+	switch requestT {
+	case FEEDBACK_GET:
+		return map[int]bool{1051: true, FEEDBACK_GET: true}
+	default:
+		return nil
+	}
+}
+
+// keysOf returns the sorted keys of a map[int]bool for logging purposes.
+func keysOf(m map[int]bool) []int {
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // sendCommand sends a command to the RoArm and returns the response
 func (c *RoArmController) sendCommand(cmd *Command) (*FeedbackData, error) {
 	c.mu.Lock()
@@ -213,13 +236,13 @@ func (c *RoArmController) sendCommand(cmd *Command) (*FeedbackData, error) {
 	}
 
 	if c.isHTTP {
-		return c.sendHTTPCommand(cmdBytes)
+		return c.sendHTTPCommand(cmdBytes, cmd.T)
 	}
-	return c.sendSerialCommand(cmdBytes)
+	return c.sendSerialCommand(cmdBytes, cmd.T)
 }
 
 // sendHTTPCommand sends a command via HTTP
-func (c *RoArmController) sendHTTPCommand(cmdBytes []byte) (*FeedbackData, error) {
+func (c *RoArmController) sendHTTPCommand(cmdBytes []byte, requestT int) (*FeedbackData, error) {
 	// URL encode the JSON command
 	encodedCmd := url.QueryEscape(string(cmdBytes))
 	requestURL := fmt.Sprintf("http://%s/js?json=%s", c.httpHost, encodedCmd)
@@ -262,15 +285,26 @@ func (c *RoArmController) sendHTTPCommand(cmdBytes []byte) (*FeedbackData, error
 		return nil, fmt.Errorf("failed to unmarshal response: %w, body: %s", err, string(body))
 	}
 
+	if accept := acceptableResponseTs(requestT); accept != nil && !accept[feedback.T] {
+		c.logger.Warnf("HTTP response T=%d did not match expected %v for request T=%d (returning anyway)",
+			feedback.T, keysOf(accept), requestT)
+	}
+
 	return &feedback, nil
 }
 
 // sendSerialCommand sends a command via serial port
-func (c *RoArmController) sendSerialCommand(cmdBytes []byte) (*FeedbackData, error) {
+func (c *RoArmController) sendSerialCommand(cmdBytes []byte, requestT int) (*FeedbackData, error) {
 	// Add newline to command
 	cmdBytes = append(cmdBytes, '\n')
 
 	c.logger.Debugf("Sending serial command: %s", string(cmdBytes))
+
+	// Flush any stale firmware feedback sitting in the input buffer so that
+	// earlier streaming frames aren't parsed as this command's response.
+	if err := c.serialPort.ResetInputBuffer(); err != nil {
+		c.logger.Warnf("ResetInputBuffer failed: %v", err)
+	}
 
 	// Write command
 	_, err := c.serialPort.Write(cmdBytes)
@@ -295,27 +329,33 @@ func (c *RoArmController) sendSerialCommand(cmdBytes []byte) (*FeedbackData, err
 		// Read available data
 		n, err := c.serialPort.Read(buffer)
 		if err != nil {
-			// Handle timeout gracefully - the serial library manages read timeouts
-			if time.Since(startTime) > c.serialTimeout {
-				return nil, fmt.Errorf("timeout reading from serial port")
+			if errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("serial port closed or unplugged: %w", err)
 			}
-			continue // Keep trying until our overall timeout
+			if time.Since(startTime) > c.serialTimeout {
+				return nil, fmt.Errorf("timeout reading from serial port: %w", err)
+			}
+			c.logger.Warnf("serial read error (will retry): %v", err)
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if n == 0 {
+			time.Sleep(1 * time.Millisecond)
+			continue
 		}
 
-		if n > 0 {
-			responseBuffer.Write(buffer[:n])
-			c.logger.Debugf("Received serial data: %s", string(buffer[:n]))
+		responseBuffer.Write(buffer[:n])
+		c.logger.Debugf("Received serial data: %s", string(buffer[:n]))
 
-			// Limit buffer size to prevent unbounded growth
-			if responseBuffer.Len() > maxFrameLength {
-				// Keep only the last maxFrameLength bytes
-				data := responseBuffer.Bytes()
-				responseBuffer.Reset()
-				if len(data) > maxFrameLength {
-					responseBuffer.Write(data[len(data)-maxFrameLength:])
-				} else {
-					responseBuffer.Write(data)
-				}
+		// Limit buffer size to prevent unbounded growth
+		if responseBuffer.Len() > maxFrameLength {
+			// Keep only the last maxFrameLength bytes
+			data := responseBuffer.Bytes()
+			responseBuffer.Reset()
+			if len(data) > maxFrameLength {
+				responseBuffer.Write(data[len(data)-maxFrameLength:])
+			} else {
+				responseBuffer.Write(data)
 			}
 		}
 
@@ -337,6 +377,17 @@ func (c *RoArmController) sendSerialCommand(cmdBytes []byte) (*FeedbackData, err
 					// Log the error but continue trying to read more data
 					c.logger.Warnf("Failed to unmarshal JSON response: %v, data: %s", err, string(jsonData))
 					// Clear the buffer and continue
+					responseBuffer.Reset()
+					continue
+				}
+
+				// Only accept response frames whose T matches what the firmware
+				// is expected to send for this request T. Stale streaming frames
+				// (e.g. unsolicited 1051 feedback) are dropped and we keep reading.
+				accept := acceptableResponseTs(requestT)
+				if accept != nil && !accept[feedback.T] {
+					c.logger.Warnf("dropping stale/unexpected response frame T=%d (wanted one of %v)",
+						feedback.T, keysOf(accept))
 					responseBuffer.Reset()
 					continue
 				}
