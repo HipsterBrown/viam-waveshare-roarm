@@ -78,8 +78,10 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		Host:     cfg.Host,
 		Port:     cfg.Port,
 		Baudrate: cfg.Baudrate,
-		Timeout:  Duration(cfg.Timeout),
-		Logger:   logger,
+		// TODO(Phase 3): RoArmGripperConfig.Timeout is deprecated; use arm's timeouts via deps.
+		HTTPTimeout:   Duration(cfg.Timeout),
+		SerialTimeout: Duration(cfg.Timeout),
+		Logger:        logger,
 	}
 
 	controller, err := GetSharedController(controllerConfig)

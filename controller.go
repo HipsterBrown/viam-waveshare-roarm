@@ -106,13 +106,14 @@ type FeedbackData struct {
 
 // RoArmController handles communication with the WaveShare RoArm-M3
 type RoArmController struct {
-	mu         sync.RWMutex
-	logger     logging.Logger
-	httpHost   string
-	httpClient *http.Client
-	serialPort serial.Port
-	isHTTP     bool
-	timeout    time.Duration
+	mu            sync.RWMutex
+	logger        logging.Logger
+	httpHost      string
+	httpClient    *http.Client
+	serialPort    serial.Port
+	isHTTP        bool
+	httpTimeout   time.Duration
+	serialTimeout time.Duration
 }
 
 // RoArmConfig represents the configuration for the RoArm controller
@@ -125,15 +126,17 @@ type RoArmConfig struct {
 	Baudrate int    `json:"baudrate,omitempty"`
 
 	// Common configuration
-	Timeout Duration       `json:"timeout,omitempty"`
-	Logger  logging.Logger `json:"-"` // Logger for debugging
+	HTTPTimeout   Duration       `json:"http_timeout,omitempty"`
+	SerialTimeout Duration       `json:"serial_timeout,omitempty"`
+	Logger        logging.Logger `json:"-"` // Logger for debugging
 }
 
 // NewRoArmController creates a new RoArm controller
 func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 	controller := &RoArmController{
-		timeout: DefaultHTTPTimeout,
-		logger:  config.Logger,
+		httpTimeout:   DefaultHTTPTimeout,
+		serialTimeout: DefaultSerialTimeout,
+		logger:        config.Logger,
 	}
 
 	// Use default logger if none provided
@@ -141,8 +144,11 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 		controller.logger = logging.NewLogger("roarm_controller")
 	}
 
-	if config.Timeout.ToStdDuration() > 0 {
-		controller.timeout = config.Timeout.ToStdDuration()
+	if config.HTTPTimeout.ToStdDuration() > 0 {
+		controller.httpTimeout = config.HTTPTimeout.ToStdDuration()
+	}
+	if config.SerialTimeout.ToStdDuration() > 0 {
+		controller.serialTimeout = config.SerialTimeout.ToStdDuration()
 	}
 
 	// Determine communication method
@@ -151,7 +157,7 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 		controller.isHTTP = true
 		controller.httpHost = config.Host
 		controller.httpClient = &http.Client{
-			Timeout: controller.timeout,
+			Timeout: controller.httpTimeout,
 		}
 	} else if config.Port != "" {
 		// Serial mode
@@ -175,7 +181,7 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 		}
 
 		// Set read timeout
-		if err := port.SetReadTimeout(DefaultSerialTimeout); err != nil {
+		if err := port.SetReadTimeout(controller.serialTimeout); err != nil {
 			port.Close()
 			return nil, fmt.Errorf("failed to set read timeout: %w", err)
 		}
@@ -219,7 +225,7 @@ func (c *RoArmController) sendHTTPCommand(cmdBytes []byte) (*FeedbackData, error
 	requestURL := fmt.Sprintf("http://%s/js?json=%s", c.httpHost, encodedCmd)
 
 	// Create request with context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), c.httpTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
@@ -282,7 +288,7 @@ func (c *RoArmController) sendSerialCommand(cmdBytes []byte) (*FeedbackData, err
 
 	for {
 		// Check for timeout
-		if time.Since(startTime) > c.timeout {
+		if time.Since(startTime) > c.serialTimeout {
 			return nil, fmt.Errorf("timeout waiting for serial response")
 		}
 
@@ -290,7 +296,7 @@ func (c *RoArmController) sendSerialCommand(cmdBytes []byte) (*FeedbackData, err
 		n, err := c.serialPort.Read(buffer)
 		if err != nil {
 			// Handle timeout gracefully - the serial library manages read timeouts
-			if time.Since(startTime) > c.timeout {
+			if time.Since(startTime) > c.serialTimeout {
 				return nil, fmt.Errorf("timeout reading from serial port")
 			}
 			continue // Keep trying until our overall timeout

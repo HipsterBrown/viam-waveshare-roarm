@@ -46,7 +46,8 @@ type RoArmM3Config struct {
 	Baudrate int    `json:"baudrate,omitempty"`
 
 	// Common configuration
-	Timeout Duration `json:"timeout,omitempty"`
+	HTTPTimeout   Duration `json:"http_timeout,omitempty"`
+	SerialTimeout Duration `json:"serial_timeout,omitempty"`
 
 	// Motion configuration
 	SpeedDegsPerSec        float32 `json:"speed_degs_per_sec,omitempty"`
@@ -156,11 +157,12 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 
 	// Create controller configuration
 	controllerConfig := &RoArmConfig{
-		Host:     conf.Host,
-		Port:     conf.Port,
-		Baudrate: conf.Baudrate,
-		Timeout:  conf.Timeout,
-		Logger:   logger,
+		Host:          conf.Host,
+		Port:          conf.Port,
+		Baudrate:      conf.Baudrate,
+		HTTPTimeout:   conf.HTTPTimeout,
+		SerialTimeout: conf.SerialTimeout,
+		Logger:        logger,
 	}
 
 	controller, err := GetSharedController(controllerConfig)

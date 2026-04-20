@@ -100,7 +100,8 @@ func configsEqual(a, b *RoArmConfig) bool {
 	return a.Host == b.Host &&
 		a.Port == b.Port &&
 		a.Baudrate == b.Baudrate &&
-		a.Timeout == b.Timeout
+		a.HTTPTimeout == b.HTTPTimeout &&
+		a.SerialTimeout == b.SerialTimeout
 }
 
 // GetSharedController returns a shared controller instance with reference counting
@@ -136,11 +137,12 @@ func GetSharedController(config *RoArmConfig) (*SafeRoArmController, error) {
 
 	// Store config and clear any previous error
 	currentConfig = &RoArmConfig{
-		Host:     config.Host,
-		Port:     config.Port,
-		Baudrate: config.Baudrate,
-		Timeout:  config.Timeout,
-		Logger:   config.Logger,
+		Host:          config.Host,
+		Port:          config.Port,
+		Baudrate:      config.Baudrate,
+		HTTPTimeout:   config.HTTPTimeout,
+		SerialTimeout: config.SerialTimeout,
+		Logger:        config.Logger,
 	}
 	lastError = nil
 	refCount = 1

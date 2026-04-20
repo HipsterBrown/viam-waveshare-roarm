@@ -1,6 +1,9 @@
 package waveshareroarm
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestArmValidateRejectsUnknownBaudrate(t *testing.T) {
 	cfg := &RoArmM3Config{Port: "/dev/ttyUSB0", Baudrate: 1152000}
@@ -20,6 +23,18 @@ func TestArmValidateAcceptsKnownBaudrate(t *testing.T) {
 
 func TestArmValidateAcceptsZeroBaudrate(t *testing.T) {
 	cfg := &RoArmM3Config{Port: "/dev/ttyUSB0", Baudrate: 0}
+	_, _, err := cfg.Validate("arms.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestArmConfigAcceptsSplitTimeouts(t *testing.T) {
+	cfg := &RoArmM3Config{
+		Host:          "1.2.3.4",
+		HTTPTimeout:   Duration(5 * time.Second),
+		SerialTimeout: Duration(500 * time.Millisecond),
+	}
 	_, _, err := cfg.Validate("arms.0")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
