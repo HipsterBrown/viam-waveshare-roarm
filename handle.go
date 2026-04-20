@@ -18,4 +18,5 @@ type RoArmHandle interface {
 	TestConnection(ctx context.Context) error
 	IsMoving(ctx context.Context) (bool, error)
 	NoteMotionDeadline(deadline time.Time)
+	Close(ctx context.Context) error
 }
