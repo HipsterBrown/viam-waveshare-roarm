@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	stdlib_errors "errors"
 	"fmt"
 	"math"
 	"sync"
@@ -188,7 +189,7 @@ func (r *roarmM3) Name() resource.Name {
 }
 
 func (r *roarmM3) NewClientFromConn(ctx context.Context, conn rpc.ClientConn, remoteName string, name resource.Name, logger logging.Logger) (arm.Arm, error) {
-	panic("not implemented")
+	return nil, stdlib_errors.ErrUnsupported
 }
 
 func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{}) (spatialmath.Pose, error) {
