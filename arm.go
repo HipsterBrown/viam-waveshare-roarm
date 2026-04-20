@@ -232,6 +232,14 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	ctx, done := r.opMgr.New(ctx)
 	defer done()
 
+	// Snapshot motion params under the mutex so concurrent Reconfigure /
+	// DoCommand writers can't race with us reading them here.
+	r.mu.Lock()
+	speed := r.defaultSpeed
+	acc := r.defaultAcc
+	jointLimits := r.jointLimits
+	r.mu.Unlock()
+
 	if len(positions) != 5 {
 		return fmt.Errorf("expected 5 joint positions for arm, got %d", len(positions))
 	}
@@ -244,7 +252,7 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	// Validate input ranges and clamp positions for the 5 arm joints
 	clampedPositions := make([]float64, len(values))
 	for i, pos := range values {
-		min, max := r.jointLimits[i][0], r.jointLimits[i][1]
+		min, max := jointLimits[i][0], jointLimits[i][1]
 
 		// Validate and clamp the position
 		if pos < min || pos > max {
@@ -269,11 +277,8 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	copy(fullPositions, clampedPositions)
 	fullPositions[5] = currentGripperPos // Preserve gripper position
 
-	// Use configured speed and acceleration
-	speed := r.defaultSpeed
-	acc := r.defaultAcc
-
-	// Check for speed/acceleration overrides in extra parameters
+	// Check for speed/acceleration overrides in extra parameters. These
+	// overrides are local to this move; do not mutate the struct fields.
 	if extra != nil {
 		if speedOverride, ok := extra["speed"]; ok {
 			if speedVal, ok := speedOverride.(float64); ok {
@@ -394,6 +399,12 @@ func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error 
 	}
 	r.opMgr.CancelRunning(ctx)
 
+	// Snapshot defaultAcc under the mutex so Reconfigure / DoCommand writers
+	// can't race with us reading it.
+	r.mu.Lock()
+	acc := r.defaultAcc
+	r.mu.Unlock()
+
 	current, err := r.controller.GetJointRadians(ctx)
 	if err != nil {
 		return fmt.Errorf("stop: read current positions: %w", err)
@@ -402,7 +413,7 @@ func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error 
 		return fmt.Errorf("stop: short feedback from controller (got %d joints)", len(current))
 	}
 	const stopSpeed = 100 // internal units, ~10 deg/s — gentle soft stop
-	return r.controller.SetJointRadians(ctx, current, stopSpeed, r.defaultAcc)
+	return r.controller.SetJointRadians(ctx, current, stopSpeed, acc)
 }
 
 func (r *roarmM3) Kinematics(ctx context.Context) (referenceframe.Model, error) {
