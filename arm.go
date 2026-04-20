@@ -469,60 +469,45 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 			},
 		}, nil
 
+	case "set_speed":
+		speed, ok := cmd["value"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("set_speed requires 'value' number")
+		}
+		if speed < 3 || speed > 180 {
+			return nil, fmt.Errorf("speed out of range: %.1f", speed)
+		}
+		r.mu.Lock()
+		r.defaultSpeed = speedToUnits(speed)
+		if r.defaultSpeed < 30 {
+			r.defaultSpeed = 30
+		}
+		r.mu.Unlock()
+		return map[string]interface{}{"speed_set": speed}, nil
+
+	case "set_acceleration":
+		acc, ok := cmd["value"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("set_acceleration requires 'value' number")
+		}
+		if acc < 10 || acc > 500 {
+			return nil, fmt.Errorf("accel out of range: %.1f", acc)
+		}
+		r.mu.Lock()
+		r.defaultAcc = accelToUnits(acc)
+		r.mu.Unlock()
+		return map[string]interface{}{"acceleration_set": acc}, nil
+
+	case "get_motion_params":
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return map[string]interface{}{
+			"current_speed_degs_per_sec":                speedFromUnits(r.defaultSpeed),
+			"current_acceleration_degs_per_sec_per_sec": accelFromUnits(r.defaultAcc),
+		}, nil
+
 	default:
-		// Check for speed and acceleration setting (similar to xArm module)
-		result := make(map[string]interface{})
-		changed := false
-
-		if speedVal, ok := cmd["set_speed"]; ok {
-			if speed, ok := speedVal.(float64); ok {
-				if speed < 3 || speed > 180 {
-					return nil, fmt.Errorf("speed must be between 3 and 180 degrees/second, got %.1f", speed)
-				}
-				r.mu.Lock()
-				r.defaultSpeed = speedToUnits(speed)
-				if r.defaultSpeed < 30 {
-					r.defaultSpeed = 30
-				}
-				r.mu.Unlock()
-				result["speed_set"] = speed
-				changed = true
-			} else {
-				return nil, fmt.Errorf("set_speed requires a number value")
-			}
-		}
-
-		if accVal, ok := cmd["set_acceleration"]; ok {
-			if acc, ok := accVal.(float64); ok {
-				if acc < 10 || acc > 500 {
-					return nil, fmt.Errorf("acceleration must be between 10 and 500 degrees/second^2, got %.1f", acc)
-				}
-				r.mu.Lock()
-				r.defaultAcc = accelToUnits(acc)
-				r.mu.Unlock()
-				result["acceleration_set"] = acc
-				changed = true
-			} else {
-				return nil, fmt.Errorf("set_acceleration requires a number value")
-			}
-		}
-
-		if getParams, ok := cmd["get_motion_params"]; ok && getParams.(bool) {
-			r.mu.RLock()
-			speedDegsPerSec := speedFromUnits(r.defaultSpeed)
-			accDegsPerSec := accelFromUnits(r.defaultAcc)
-			r.mu.RUnlock()
-
-			result["current_speed_degs_per_sec"] = speedDegsPerSec
-			result["current_acceleration_degs_per_sec_per_sec"] = accDegsPerSec
-			changed = true
-		}
-
-		if changed {
-			return result, nil
-		}
-
-		return nil, fmt.Errorf("unknown command: %v", cmd)
+		return nil, fmt.Errorf("unknown command: %v", cmd["command"])
 	}
 }
 
