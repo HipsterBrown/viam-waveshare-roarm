@@ -86,6 +86,31 @@ func TestMoveRejectsWrongLengthInput(t *testing.T) {
 	}
 }
 
+func TestArmStopHoldsCurrentPosition(t *testing.T) {
+	fc := &fakeController{
+		Feedback: FeedbackData{B: 0.5, S: 0.3, E: 0.1, Wrist: 0.2, R: 0.4, G: 0.0},
+	}
+	r := &roarmM3{
+		controller: fc, defaultSpeed: 500, defaultAcc: 50,
+		jointLimits: RoArmM3JointLimits[:5],
+		logger:      logging.NewTestLogger(t),
+		opMgr:       operation.NewSingleOperationManager(),
+	}
+	if err := r.Stop(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []float64{0.5, 0.3, 0.1, 0.2, 0.4, 0.0}
+	for i, v := range want {
+		if fc.LastRadians[i] != v {
+			t.Fatalf("joint %d: got %v, want %v", i, fc.LastRadians[i], v)
+		}
+	}
+	const expectedStopSpeed = 100
+	if fc.LastSpeed != expectedStopSpeed {
+		t.Fatalf("expected stop speed %d, got %d", expectedStopSpeed, fc.LastSpeed)
+	}
+}
+
 func TestMovePreservesGripperPosition(t *testing.T) {
 	fc := &fakeController{}
 	// Gripper currently at some position; MoveToJointPositions must preserve it.
