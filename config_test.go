@@ -40,3 +40,25 @@ func TestArmConfigAcceptsSplitTimeouts(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestGripperValidateRequiresArmDep(t *testing.T) {
+	cfg := &RoArmGripperConfig{}
+	deps, _, err := cfg.Validate("grippers.0")
+	if err == nil {
+		t.Fatal("expected error when arm is unset")
+	}
+	if len(deps) != 0 {
+		t.Fatal("expected no deps when arm is unset")
+	}
+}
+
+func TestGripperValidateReturnsArmAsDep(t *testing.T) {
+	cfg := &RoArmGripperConfig{Arm: "my-arm"}
+	deps, _, err := cfg.Validate("grippers.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deps) != 1 || deps[0] != "my-arm" {
+		t.Fatalf("expected [my-arm], got %v", deps)
+	}
+}

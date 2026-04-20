@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/referenceframe"
@@ -30,28 +31,20 @@ const (
 	gripperGrabRad = -0.2 // lower limit of joint 6 (fully closed)
 )
 
-// RoArmGripperConfig configuration for the RoArm-M3 gripper
+// RoArmGripperConfig configuration for the RoArm-M3 gripper.
+// The gripper borrows the serial/HTTP handle from the arm it is paired
+// with, so we only need a reference to the arm resource.
 type RoArmGripperConfig struct {
-	// HTTP configuration
-	Host string `json:"host,omitempty"`
-
-	// Serial configuration
-	Port     string `json:"port,omitempty"`
-	Baudrate int    `json:"baudrate,omitempty"`
-
-	// Common configuration
-	Timeout time.Duration `json:"timeout,omitempty"`
+	// Arm is the name of the arm resource supplying the controller.
+	Arm string `json:"arm"`
 }
 
-// Validate validates the gripper config
+// Validate validates the gripper config and declares the arm dependency.
 func (cfg *RoArmGripperConfig) Validate(path string) ([]string, []string, error) {
-	if cfg.Host == "" && cfg.Port == "" {
-		return nil, nil, fmt.Errorf("must specify either host for HTTP or port for serial communication")
+	if cfg.Arm == "" {
+		return nil, nil, fmt.Errorf("%s: must specify arm dependency", path)
 	}
-	if cfg.Host != "" && cfg.Port != "" {
-		return nil, nil, fmt.Errorf("cannot specify both host and port, choose either HTTP or serial communication")
-	}
-	return nil, nil, nil
+	return []string{cfg.Arm}, nil, nil
 }
 
 // roarmM3Gripper represents the RoArm-M3 gripper
@@ -60,7 +53,7 @@ type roarmM3Gripper struct {
 
 	name       resource.Name
 	logger     logging.Logger
-	controller *SafeRoArmController
+	controller RoArmHandle
 	model      referenceframe.Model
 
 	// State management
@@ -84,26 +77,20 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		return nil, err
 	}
 
-	// Create controller configuration
-	controllerConfig := &RoArmConfig{
-		Host:     cfg.Host,
-		Port:     cfg.Port,
-		Baudrate: cfg.Baudrate,
-		// TODO(Phase 3): RoArmGripperConfig.Timeout is deprecated; use arm's timeouts via deps.
-		HTTPTimeout:   Duration(cfg.Timeout),
-		SerialTimeout: Duration(cfg.Timeout),
-		Logger:        logger,
-	}
-
-	controller, err := GetSharedController(controllerConfig)
+	armRes, err := arm.FromDependencies(deps, cfg.Arm)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get shared RoArm controller: %w", err)
+		return nil, fmt.Errorf("gripper %s: could not find arm %q in deps: %w", conf.ResourceName(), cfg.Arm, err)
 	}
+	armImpl, ok := armRes.(*roarmM3)
+	if !ok {
+		return nil, fmt.Errorf("gripper %s: arm %q is not a roarm-m3 arm", conf.ResourceName(), cfg.Arm)
+	}
+	handle := armImpl.Handle()
 
 	g := &roarmM3Gripper{
 		name:       conf.ResourceName(),
 		logger:     logger,
-		controller: controller,
+		controller: handle,
 		model:      referenceframe.NewSimpleModel("roarm_m3_gripper"),
 	}
 
@@ -123,7 +110,7 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	defer g.isMoving.Store(false)
 
 	// Open position: joint-6 upper limit (fully open).
-	err := g.controller.SetJointRadian(6, gripperOpenRad, 500, 50)
+	err := g.controller.SetJointRadian(ctx, 6, gripperOpenRad, 500, 50)
 	if err != nil {
 		return fmt.Errorf("failed to open gripper: %w", err)
 	}
@@ -144,7 +131,7 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	defer g.isMoving.Store(false)
 
 	// Grab position: joint-6 lower limit (fully closed).
-	err := g.controller.SetJointRadian(6, gripperGrabRad, 500, 50)
+	err := g.controller.SetJointRadian(ctx, 6, gripperGrabRad, 500, 50)
 	if err != nil {
 		return false, fmt.Errorf("failed to grab with gripper: %w", err)
 	}
@@ -155,7 +142,7 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	// Check if something was grabbed by reading the gripper position.
 	// If the gripper couldn't fully close to the lower limit, it likely
 	// grabbed something.
-	radians, err := g.controller.GetJointRadians()
+	radians, err := g.controller.GetJointRadians(ctx)
 	if err != nil {
 		g.logger.Warnf("Failed to read gripper position after grab: %v", err)
 		// Assume grab was successful if we can't read position
@@ -198,17 +185,21 @@ func (g *roarmM3Gripper) ModelFrame() referenceframe.Model {
 
 // Additional helper methods for gripper control
 
-// GetPosition returns the current gripper position (-10 to 100 degrees)
+// GetPosition returns the current gripper position in degrees (-10 to 100).
+// Reads the 6th joint radian from the shared controller and converts.
 func (g *roarmM3Gripper) GetPosition(ctx context.Context) (float64, error) {
-	position, err := g.controller.GetGripperPosition()
+	radians, err := g.controller.GetJointRadians(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read gripper position: %w", err)
 	}
-
-	return position, nil
+	if len(radians) < 6 {
+		return 0, fmt.Errorf("expected at least 6 joint positions, got %d", len(radians))
+	}
+	return radians[5] * 180.0 / math.Pi, nil
 }
 
-// SetPosition sets the gripper to a specific position (-10 to 100 degrees)
+// SetPosition sets the gripper to a specific position (-10 to 100 degrees).
+// Internally this commands joint 6 directly via the narrow handle.
 func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, speed, acc int) error {
 	if angleDegrees < -10 || angleDegrees > 100 {
 		return fmt.Errorf("gripper angle must be between -10 and 100 degrees, got %.1f", angleDegrees)
@@ -220,8 +211,8 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 	g.isMoving.Store(true)
 	defer g.isMoving.Store(false)
 
-	err := g.controller.SetGripperPosition(angleDegrees, speed, acc)
-	if err != nil {
+	radians := angleDegrees * math.Pi / 180.0
+	if err := g.controller.SetJointRadian(ctx, 6, radians, speed, acc); err != nil {
 		return fmt.Errorf("failed to set gripper position: %w", err)
 	}
 
@@ -239,8 +230,9 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 	return nil
 }
 
+// Close releases any gripper-local resources. The underlying controller is
+// owned by the arm and must not be closed here.
 func (g *roarmM3Gripper) Close(context.Context) error {
-	ReleaseSharedController()
 	return nil
 }
 
@@ -310,14 +302,6 @@ func (g *roarmM3Gripper) DoCommand(ctx context.Context, cmd map[string]interface
 		}
 		err := g.SetPosition(ctx, degrees, speed, acc)
 		return map[string]interface{}{"success": err == nil}, err
-
-	case "controller_status":
-		refCount, hasController, configSummary := GetControllerStatus()
-		return map[string]interface{}{
-			"ref_count":      refCount,
-			"has_controller": hasController,
-			"config":         configSummary,
-		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown command: %v", cmd["command"])

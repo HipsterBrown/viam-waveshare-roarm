@@ -95,7 +95,7 @@ type FeedbackData struct {
 
 // RoArmController handles communication with the WaveShare RoArm-M3
 type RoArmController struct {
-	mu            sync.RWMutex
+	mu            sync.Mutex
 	logger        logging.Logger
 	httpHost      string
 	httpClient    *http.Client
@@ -184,7 +184,9 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 }
 
 // Close closes the controller connection
-func (c *RoArmController) Close() error {
+func (c *RoArmController) Close(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if !c.isHTTP && c.serialPort != nil {
 		return c.serialPort.Close()
 	}
@@ -214,7 +216,7 @@ func keysOf(m map[int]bool) []int {
 }
 
 // sendCommand sends a command to the RoArm and returns the response
-func (c *RoArmController) sendCommand(cmd *Command) (*FeedbackData, error) {
+func (c *RoArmController) sendCommand(ctx context.Context, cmd *Command) (*FeedbackData, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -224,22 +226,22 @@ func (c *RoArmController) sendCommand(cmd *Command) (*FeedbackData, error) {
 	}
 
 	if c.isHTTP {
-		return c.sendHTTPCommand(cmdBytes, cmd.T)
+		return c.sendHTTPCommand(ctx, cmdBytes, cmd.T)
 	}
-	return c.sendSerialCommand(cmdBytes, cmd.T)
+	return c.sendSerialCommand(ctx, cmdBytes, cmd.T)
 }
 
 // sendHTTPCommand sends a command via HTTP
-func (c *RoArmController) sendHTTPCommand(cmdBytes []byte, requestT int) (*FeedbackData, error) {
+func (c *RoArmController) sendHTTPCommand(ctx context.Context, cmdBytes []byte, requestT int) (*FeedbackData, error) {
 	// URL encode the JSON command
 	encodedCmd := url.QueryEscape(string(cmdBytes))
 	requestURL := fmt.Sprintf("http://%s/js?json=%s", c.httpHost, encodedCmd)
 
-	// Create request with context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), c.httpTimeout)
+	// Create request with context derived from caller's ctx for timeout
+	reqCtx, cancel := context.WithTimeout(ctx, c.httpTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, "GET", requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
@@ -282,7 +284,7 @@ func (c *RoArmController) sendHTTPCommand(cmdBytes []byte, requestT int) (*Feedb
 }
 
 // sendSerialCommand sends a command via serial port
-func (c *RoArmController) sendSerialCommand(cmdBytes []byte, requestT int) (*FeedbackData, error) {
+func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte, requestT int) (*FeedbackData, error) {
 	// Add newline to command
 	cmdBytes = append(cmdBytes, '\n')
 
@@ -309,6 +311,13 @@ func (c *RoArmController) sendSerialCommand(cmdBytes []byte, requestT int) (*Fee
 	startTime := time.Now()
 
 	for {
+		// Honor caller cancellation (e.g. Reconfigure/Close, RPC deadline).
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
 		// Check for timeout
 		if time.Since(startTime) > c.serialTimeout {
 			return nil, fmt.Errorf("timeout waiting for serial response")
@@ -387,7 +396,7 @@ func (c *RoArmController) sendSerialCommand(cmdBytes []byte, requestT int) (*Fee
 }
 
 // SetTorque enables or disables torque for all joints
-func (c *RoArmController) SetTorque(enable bool) error {
+func (c *RoArmController) SetTorque(ctx context.Context, enable bool) error {
 	cmd := &Command{
 		T: TORQUE_SET,
 		Data: map[string]interface{}{
@@ -398,12 +407,12 @@ func (c *RoArmController) SetTorque(enable bool) error {
 		cmd.Data["cmd"] = 1
 	}
 
-	_, err := c.sendCommand(cmd)
+	_, err := c.sendCommand(ctx, cmd)
 	return err
 }
 
 // SetLED controls the LED brightness (0-255)
-func (c *RoArmController) SetLED(brightness int) error {
+func (c *RoArmController) SetLED(ctx context.Context, brightness int) error {
 	if err := ValidateLEDBrightness(brightness); err != nil {
 		return err
 	}
@@ -415,19 +424,19 @@ func (c *RoArmController) SetLED(brightness int) error {
 		},
 	}
 
-	_, err := c.sendCommand(cmd)
+	_, err := c.sendCommand(ctx, cmd)
 	return err
 }
 
 // MoveToHome moves the arm to the home position
-func (c *RoArmController) MoveToHome() error {
+func (c *RoArmController) MoveToHome(ctx context.Context) error {
 	// Home position: all joints at 0 except joint 3 at 90 degrees
 	homePositions := []float64{0, 0, math.Pi / 2, 0, 0, 0}
-	return c.SetJointRadians(homePositions, 100, 50)
+	return c.SetJointRadians(ctx, homePositions, 100, 50)
 }
 
 // SetJointRadian moves a single joint to the specified radian position
-func (c *RoArmController) SetJointRadian(joint int, radian float64, speed, acc int) error {
+func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian float64, speed, acc int) error {
 	if joint < 1 || joint > 6 {
 		return fmt.Errorf("joint must be 1-6, got %d", joint)
 	}
@@ -457,12 +466,12 @@ func (c *RoArmController) SetJointRadian(joint int, radian float64, speed, acc i
 		},
 	}
 
-	_, err := c.sendCommand(cmd)
+	_, err := c.sendCommand(ctx, cmd)
 	return err
 }
 
 // SetJointRadians moves all joints to the specified radian positions
-func (c *RoArmController) SetJointRadians(radians []float64, speed, acc int) error {
+func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64, speed, acc int) error {
 	if len(radians) != 6 {
 		return fmt.Errorf("expected 6 joint positions, got %d", len(radians))
 	}
@@ -498,18 +507,18 @@ func (c *RoArmController) SetJointRadians(radians []float64, speed, acc int) err
 		},
 	}
 
-	_, err := c.sendCommand(cmd)
+	_, err := c.sendCommand(ctx, cmd)
 	return err
 }
 
 // GetJointRadians returns the current joint positions in radians
-func (c *RoArmController) GetJointRadians() ([]float64, error) {
+func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error) {
 	cmd := &Command{
 		T:    FEEDBACK_GET,
 		Data: map[string]interface{}{},
 	}
 
-	feedback, err := c.sendCommand(cmd)
+	feedback, err := c.sendCommand(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -527,35 +536,14 @@ func (c *RoArmController) GetJointRadians() ([]float64, error) {
 	return radians, nil
 }
 
-// SetGripperPosition sets the gripper position (-10 to 100 degrees)
-func (c *RoArmController) SetGripperPosition(angleDegrees float64, speed, acc int) error {
-	if angleDegrees < -10 || angleDegrees > 100 {
-		return fmt.Errorf("gripper angle must be -10 to 100 degrees, got %.1f", angleDegrees)
-	}
-
-	radians := angleDegrees * math.Pi / 180.0
-	return c.SetJointRadian(6, radians, speed, acc)
-}
-
-// GetGripperPosition returns the current gripper position in degrees
-func (c *RoArmController) GetGripperPosition() (float64, error) {
-	radians, err := c.GetJointRadians()
-	if err != nil {
-		return 0, err
-	}
-
-	angleDegrees := radians[5] * 180.0 / math.Pi
-	return angleDegrees, nil
-}
-
 // GetFeedback returns the full feedback data from the arm
-func (c *RoArmController) GetFeedback() (*FeedbackData, error) {
+func (c *RoArmController) GetFeedback(ctx context.Context) (*FeedbackData, error) {
 	cmd := &Command{
 		T:    FEEDBACK_GET,
 		Data: map[string]interface{}{},
 	}
 
-	return c.sendCommand(cmd)
+	return c.sendCommand(ctx, cmd)
 }
 
 // ValidateSpeed validates speed parameter (1-4096 as per SDK)
@@ -583,10 +571,10 @@ func ValidateLEDBrightness(brightness int) error {
 }
 
 // TestConnection tests the connection by sending a feedback request
-func (c *RoArmController) TestConnection() error {
+func (c *RoArmController) TestConnection(ctx context.Context) error {
 	c.logger.Debug("Testing connection...")
 
-	_, err := c.GetFeedback()
+	_, err := c.GetFeedback(ctx)
 	if err != nil {
 		return fmt.Errorf("connection test failed: %w", err)
 	}

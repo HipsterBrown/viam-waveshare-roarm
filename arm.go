@@ -75,13 +75,11 @@ func (cfg *RoArmM3Config) Validate(path string) ([]string, []string, error) {
 }
 
 type roarmM3 struct {
-	resource.AlwaysRebuild
-
 	name       resource.Name
 	logger     logging.Logger
 	cfg        *RoArmM3Config
 	opMgr      *operation.SingleOperationManager
-	controller *SafeRoArmController
+	controller *RoArmController
 
 	mu          sync.RWMutex
 	moveLock    sync.Mutex
@@ -165,14 +163,14 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		Logger:        logger,
 	}
 
-	controller, err := GetSharedController(controllerConfig)
+	controller, err := NewRoArmController(controllerConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get shared RoArm controller: %w", err)
+		return nil, fmt.Errorf("failed to create RoArm controller: %w", err)
 	}
 
 	model, err := makeRoArmModelFrame()
 	if err != nil {
-		ReleaseSharedController() // Clean up on error
+		_ = controller.Close(ctx) // Clean up on error
 		return nil, fmt.Errorf("failed to create kinematic model: %w", err)
 	}
 
@@ -261,7 +259,7 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 
 	// Get current gripper position to preserve it
 	currentGripperPos := 0.0 // Default neutral position
-	currentFullPositions, err := r.controller.GetJointRadians()
+	currentFullPositions, err := r.controller.GetJointRadians(ctx)
 	if err != nil {
 		r.logger.Warnf("Failed to get current gripper position, using neutral: %v", err)
 	} else if len(currentFullPositions) >= 6 {
@@ -306,7 +304,7 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	}
 
 	// Send command to controller with all 6 joints (including preserved gripper)
-	if err := r.controller.SetJointRadians(fullPositions, speed, acc); err != nil {
+	if err := r.controller.SetJointRadians(ctx, fullPositions, speed, acc); err != nil {
 		return fmt.Errorf("failed to move arm: %w", err)
 	}
 
@@ -358,7 +356,7 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 	defer r.mu.RUnlock()
 
 	// Get all joint positions from controller (includes gripper)
-	allRadians, err := r.controller.GetJointRadians()
+	allRadians, err := r.controller.GetJointRadians(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read joint positions: %w", err)
 	}
@@ -406,7 +404,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("set_torque command requires 'enable' boolean parameter")
 		}
-		err := r.controller.SetTorque(enable)
+		err := r.controller.SetTorque(ctx, enable)
 		return map[string]interface{}{"success": err == nil}, err
 
 	case "set_led":
@@ -414,15 +412,15 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("set_led command requires 'brightness' number parameter")
 		}
-		err := r.controller.SetLED(int(brightness))
+		err := r.controller.SetLED(ctx, int(brightness))
 		return map[string]interface{}{"success": err == nil}, err
 
 	case "move_to_home":
-		err := r.controller.MoveToHome()
+		err := r.controller.MoveToHome(ctx)
 		return map[string]interface{}{"success": err == nil}, err
 
 	case "get_feedback":
-		feedback, err := r.controller.GetFeedback()
+		feedback, err := r.controller.GetFeedback(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -448,14 +446,6 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 				"roll":     feedback.TR,
 				"gripper":  feedback.TG,
 			},
-		}, nil
-
-	case "controller_status":
-		refCount, hasController, configSummary := GetControllerStatus()
-		return map[string]interface{}{
-			"ref_count":      refCount,
-			"has_controller": hasController,
-			"config":         configSummary,
 		}, nil
 
 	default:
@@ -540,8 +530,96 @@ func (r *roarmM3) Geometries(ctx context.Context, extra map[string]interface{}) 
 	return gif.Geometries(), nil
 }
 
-func (r *roarmM3) Close(context.Context) error {
+func (r *roarmM3) Close(ctx context.Context) error {
 	r.cancelFunc()
-	ReleaseSharedController()
+	if r.controller != nil {
+		return r.controller.Close(ctx)
+	}
+	return nil
+}
+
+// Handle returns the underlying controller for sibling resources (e.g. gripper).
+// Package-private: not part of the public Viam API.
+func (r *roarmM3) Handle() RoArmHandle {
+	return r.controller
+}
+
+// Reconfigure updates the arm's configuration. Connectivity-affecting fields
+// (Host/Port/Baudrate/timeouts) trigger a controller reopen. Motion-only
+// changes (speed/acceleration) update in place without tearing down the link.
+func (r *roarmM3) Reconfigure(ctx context.Context, deps resource.Dependencies, conf resource.Config) error {
+	newConf, err := resource.NativeConfig[*RoArmM3Config](conf)
+	if err != nil {
+		return err
+	}
+
+	// Validate motion parameters before we touch anything.
+	speedDegsPerSec := newConf.SpeedDegsPerSec
+	if speedDegsPerSec == 0 {
+		speedDegsPerSec = 50
+	}
+	if speedDegsPerSec < 3 || speedDegsPerSec > 180 {
+		return fmt.Errorf("speed_degs_per_sec must be between 3 and 180 degrees/second, got %.1f", speedDegsPerSec)
+	}
+
+	accelerationDegsPerSec := newConf.AccelerationDegsPerSec
+	if accelerationDegsPerSec == 0 {
+		accelerationDegsPerSec = 100
+	}
+	if accelerationDegsPerSec < 10 || accelerationDegsPerSec > 500 {
+		return fmt.Errorf("acceleration_degs_per_sec_per_sec must be between 10 and 500 degrees/second^2, got %.1f", accelerationDegsPerSec)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	needsReopen := r.cfg == nil ||
+		r.cfg.Host != newConf.Host ||
+		r.cfg.Port != newConf.Port ||
+		r.cfg.Baudrate != newConf.Baudrate ||
+		r.cfg.HTTPTimeout != newConf.HTTPTimeout ||
+		r.cfg.SerialTimeout != newConf.SerialTimeout
+
+	if needsReopen {
+		if r.controller != nil {
+			_ = r.controller.Close(ctx)
+		}
+		ctrl, err := NewRoArmController(&RoArmConfig{
+			Host:          newConf.Host,
+			Port:          newConf.Port,
+			Baudrate:      newConf.Baudrate,
+			HTTPTimeout:   newConf.HTTPTimeout,
+			SerialTimeout: newConf.SerialTimeout,
+			Logger:        r.logger,
+		})
+		if err != nil {
+			return err
+		}
+		r.controller = ctrl
+	}
+
+	// Motion params always update.
+	defaultSpeed := int(speedDegsPerSec * 10)
+	if defaultSpeed < 30 {
+		defaultSpeed = 30
+	}
+	if defaultSpeed > 4096 {
+		defaultSpeed = 4096
+	}
+	defaultAcc := int(accelerationDegsPerSec * 0.5)
+	if defaultAcc < 1 {
+		defaultAcc = 1
+	}
+	if defaultAcc > 254 {
+		defaultAcc = 254
+	}
+
+	r.defaultSpeed = defaultSpeed
+	r.defaultAcc = defaultAcc
+	r.cfg = newConf
+
+	r.logger.Infof("RoArm-M3 reconfigured with speed: %.1f deg/s (internal: %d), acceleration: %.1f deg/s² (internal: %d)",
+		speedDegsPerSec, defaultSpeed, accelerationDegsPerSec, defaultAcc)
+
 	return nil
 }
