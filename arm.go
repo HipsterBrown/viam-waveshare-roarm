@@ -243,13 +243,14 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	}
 
 	// Get current gripper position to preserve it
-	currentGripperPos := 0.0 // Default neutral position
 	currentFullPositions, err := r.controller.GetJointRadians(ctx)
 	if err != nil {
-		r.logger.Warnf("Failed to get current gripper position, using neutral: %v", err)
-	} else if len(currentFullPositions) >= 6 {
-		currentGripperPos = currentFullPositions[5] // Joint 6 (gripper)
+		return fmt.Errorf("MoveToJointPositions: read current positions: %w", err)
 	}
+	if len(currentFullPositions) < 6 {
+		return fmt.Errorf("MoveToJointPositions: short feedback (got %d joints)", len(currentFullPositions))
+	}
+	currentGripperPos := currentFullPositions[5] // Joint 6 (gripper)
 
 	// Create full 6-joint array with arm positions + current gripper position
 	fullPositions := make([]float64, 6)
