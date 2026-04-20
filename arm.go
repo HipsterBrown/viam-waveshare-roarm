@@ -130,25 +130,15 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		return nil, fmt.Errorf("acceleration_degs_per_sec_per_sec must be between 10 and 500 degrees/second^2, got %.1f", accelerationDegsPerSec)
 	}
 
-	// Convert degrees/sec to internal speed units (approximate conversion based on RoArm SDK)
-	// RoArm speed range is 1-4096, where ~50 deg/sec ≈ 500 units
-	defaultSpeed := int(speedDegsPerSec * 10)
+	// Convert degrees/sec to internal speed units (approximate conversion based on RoArm SDK).
+	// Preserve the 30-unit (~3 deg/s) floor for safety margin beyond the helper's minSpeedUnits=1.
+	defaultSpeed := speedToUnits(float64(speedDegsPerSec))
 	if defaultSpeed < 30 {
 		defaultSpeed = 30
 	}
-	if defaultSpeed > 4096 {
-		defaultSpeed = 4096
-	}
 
-	// Convert degrees/sec^2 to internal acceleration units
-	// RoArm acceleration range is 1-254, where ~100 deg/sec^2 ≈ 50 units
-	defaultAcc := int(accelerationDegsPerSec * 0.5)
-	if defaultAcc < 1 {
-		defaultAcc = 1
-	}
-	if defaultAcc > 254 {
-		defaultAcc = 254
-	}
+	// Convert degrees/sec^2 to internal acceleration units.
+	defaultAcc := accelToUnits(float64(accelerationDegsPerSec))
 
 	// Create controller configuration
 	controllerConfig := &RoArmConfig{
@@ -273,26 +263,17 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	if extra != nil {
 		if speedOverride, ok := extra["speed"]; ok {
 			if speedVal, ok := speedOverride.(float64); ok {
-				// Convert from degrees/sec to internal units
-				speed = int(speedVal * 10)
+				// Convert from degrees/sec to internal units; preserve 30-unit safety floor.
+				speed = speedToUnits(speedVal)
 				if speed < 30 {
 					speed = 30
-				}
-				if speed > 4096 {
-					speed = 4096
 				}
 			}
 		}
 		if accOverride, ok := extra["acceleration"]; ok {
 			if accVal, ok := accOverride.(float64); ok {
-				// Convert from degrees/sec^2 to internal units
-				acc = int(accVal * 0.5)
-				if acc < 1 {
-					acc = 1
-				}
-				if acc > 254 {
-					acc = 254
-				}
+				// Convert from degrees/sec^2 to internal units.
+				acc = accelToUnits(accVal)
 			}
 		}
 	}
@@ -317,7 +298,8 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	}
 
 	// Calculate move time based on configured speed (convert internal units back to rad/sec)
-	speedRadPerSec := float64(speed) / 10.0 * math.Pi / 180.0 // Convert to rad/sec
+	speedDegPerSec := speedFromUnits(speed)
+	speedRadPerSec := speedDegPerSec * math.Pi / 180.0
 	moveTimeSeconds := maxMovement / speedRadPerSec
 	if moveTimeSeconds < 0.1 {
 		moveTimeSeconds = 0.1 // Minimum move time
@@ -470,12 +452,9 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 					return nil, fmt.Errorf("speed must be between 3 and 180 degrees/second, got %.1f", speed)
 				}
 				r.mu.Lock()
-				r.defaultSpeed = int(speed * 10)
+				r.defaultSpeed = speedToUnits(speed)
 				if r.defaultSpeed < 30 {
 					r.defaultSpeed = 30
-				}
-				if r.defaultSpeed > 4096 {
-					r.defaultSpeed = 4096
 				}
 				r.mu.Unlock()
 				result["speed_set"] = speed
@@ -491,13 +470,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 					return nil, fmt.Errorf("acceleration must be between 10 and 500 degrees/second^2, got %.1f", acc)
 				}
 				r.mu.Lock()
-				r.defaultAcc = int(acc * 0.5)
-				if r.defaultAcc < 1 {
-					r.defaultAcc = 1
-				}
-				if r.defaultAcc > 254 {
-					r.defaultAcc = 254
-				}
+				r.defaultAcc = accelToUnits(acc)
 				r.mu.Unlock()
 				result["acceleration_set"] = acc
 				changed = true
@@ -508,8 +481,8 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 
 		if getParams, ok := cmd["get_motion_params"]; ok && getParams.(bool) {
 			r.mu.RLock()
-			speedDegsPerSec := float64(r.defaultSpeed) / 10.0
-			accDegsPerSec := float64(r.defaultAcc) / 0.5
+			speedDegsPerSec := speedFromUnits(r.defaultSpeed)
+			accDegsPerSec := accelFromUnits(r.defaultAcc)
 			r.mu.RUnlock()
 
 			result["current_speed_degs_per_sec"] = speedDegsPerSec
@@ -609,21 +582,12 @@ func (r *roarmM3) Reconfigure(ctx context.Context, deps resource.Dependencies, c
 		r.controller = ctrl
 	}
 
-	// Motion params always update.
-	defaultSpeed := int(speedDegsPerSec * 10)
+	// Motion params always update. Preserve 30-unit safety floor on speed.
+	defaultSpeed := speedToUnits(float64(speedDegsPerSec))
 	if defaultSpeed < 30 {
 		defaultSpeed = 30
 	}
-	if defaultSpeed > 4096 {
-		defaultSpeed = 4096
-	}
-	defaultAcc := int(accelerationDegsPerSec * 0.5)
-	if defaultAcc < 1 {
-		defaultAcc = 1
-	}
-	if defaultAcc > 254 {
-		defaultAcc = 254
-	}
+	defaultAcc := accelToUnits(float64(accelerationDegsPerSec))
 
 	r.defaultSpeed = defaultSpeed
 	r.defaultAcc = defaultAcc

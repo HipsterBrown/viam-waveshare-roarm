@@ -436,7 +436,8 @@ func (c *RoArmController) NoteMotionDeadline(deadline time.Time) {
 // at the given firmware speed, used when the caller does not supply a better
 // estimate via NoteMotionDeadline.
 func estimateMoveDeadline(now time.Time, speed int) time.Time {
-	radPerSec := float64(speed) / 10.0 * math.Pi / 180.0
+	speedDegPerSec := speedFromUnits(speed)
+	radPerSec := speedDegPerSec * math.Pi / 180.0
 	if radPerSec <= 0 {
 		radPerSec = 1 // defensive
 	}
