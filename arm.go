@@ -84,7 +84,7 @@ type roarmM3 struct {
 	opMgr      *operation.SingleOperationManager
 	controller *RoArmController
 
-	mu          sync.RWMutex
+	mu          sync.Mutex
 	model       referenceframe.Model
 	jointLimits [][2]float64
 
@@ -201,8 +201,8 @@ func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{})
 	if r.closed.Load() {
 		return nil, errClosed
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	inputs, err := r.CurrentInputs(ctx)
 	if err != nil {
@@ -360,8 +360,8 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 	if r.closed.Load() {
 		return nil, errClosed
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	// Get all joint positions from controller (includes gripper)
 	allRadians, err := r.controller.GetJointRadians(ctx)
