@@ -45,26 +45,14 @@ const (
 )
 
 // Joint limits for RoArm-M3 (in radians) - from waveshare_roarm_sdk utils.py
-var (
-	RoArmM3JointLimits = [][2]float64{
-		{-3.3, 3.3}, // Joint 1: ±189° (wider than ±180°)
-		{-1.9, 1.9}, // Joint 2: ±109° (wider than ±90°)
-		{-1.2, 3.3}, // Joint 3: -69° to 189°
-		{-1.9, 1.9}, // Joint 4: ±109° (wider than ±90°)
-		{-3.3, 3.3}, // Joint 5: ±189° (wider than ±180°)
-		{-0.2, 1.9}, // Joint 6: -11° to 109° (gripper)
-	}
-
-	// Angle limits for reference (in degrees) - from waveshare_roarm_sdk utils.py
-	RoArmM3AngleLimits = [][2]float64{
-		{-190, 190}, // Joint 1
-		{-110, 110}, // Joint 2
-		{-70, 190},  // Joint 3
-		{-110, 110}, // Joint 4
-		{-190, 190}, // Joint 5
-		{-10, 100},  // Joint 6 (gripper)
-	}
-)
+var RoArmM3JointLimits = [][2]float64{
+	{-3.3, 3.3}, // Joint 1: ±189° (wider than ±180°)
+	{-1.9, 1.9}, // Joint 2: ±109° (wider than ±90°)
+	{-1.2, 3.3}, // Joint 3: -69° to 189°
+	{-1.9, 1.9}, // Joint 4: ±109° (wider than ±90°)
+	{-3.3, 3.3}, // Joint 5: ±189° (wider than ±180°)
+	{-0.2, 1.9}, // Joint 6: -11° to 109° (gripper)
+}
 
 // Command represents a JSON command to send to the RoArm
 type Command struct {
@@ -459,17 +447,11 @@ func (c *RoArmController) SetJointRadian(joint int, radian float64, speed, acc i
 			joint, radian, limits[0], limits[1])
 	}
 
-	// Apply coordinate transformation for gripper (joint 6) - matching Python SDK
-	transformedRadian := radian
-	if joint == 6 {
-		transformedRadian = math.Pi - radian
-	}
-
 	cmd := &Command{
 		T: JOINT_RADIAN_CTRL,
 		Data: map[string]interface{}{
 			"joint": joint,
-			"rad":   transformedRadian,
+			"rad":   radian,
 			"spd":   speed,
 			"acc":   acc,
 		},
@@ -502,20 +484,15 @@ func (c *RoArmController) SetJointRadians(radians []float64, speed, acc int) err
 		}
 	}
 
-	// Apply coordinate transformation for gripper (joint 6) - matching Python SDK
-	transformedRadians := make([]float64, 6)
-	copy(transformedRadians, radians)
-	transformedRadians[5] = math.Pi - transformedRadians[5] // Joint 6 (gripper)
-
 	cmd := &Command{
 		T: JOINTS_RADIAN_CTRL,
 		Data: map[string]interface{}{
-			"base":     transformedRadians[0],
-			"shoulder": transformedRadians[1],
-			"elbow":    transformedRadians[2],
-			"wrist":    transformedRadians[3],
-			"roll":     transformedRadians[4],
-			"hand":     transformedRadians[5],
+			"base":     radians[0],
+			"shoulder": radians[1],
+			"elbow":    radians[2],
+			"wrist":    radians[3],
+			"roll":     radians[4],
+			"hand":     radians[5],
 			"spd":      speed,
 			"acc":      acc,
 		},
@@ -539,12 +516,12 @@ func (c *RoArmController) GetJointRadians() ([]float64, error) {
 
 	// Extract joint positions and apply coordinate transformations
 	radians := []float64{
-		feedback.B,           // Joint 1
-		feedback.S,           // Joint 2
-		feedback.E,           // Joint 3
-		feedback.T_,          // Joint 4
-		feedback.R,           // Joint 5
-		math.Pi - feedback.G, // Joint 6 (gripper) - reverse transformation
+		feedback.B,  // Joint 1
+		feedback.S,  // Joint 2
+		feedback.E,  // Joint 3
+		feedback.T_, // Joint 4
+		feedback.R,  // Joint 5
+		feedback.G,  // Joint 6 (gripper) - no transformation applied (see plan task 2.5)
 	}
 
 	return radians, nil

@@ -20,6 +20,16 @@ var (
 	RoArmM3Gripper = resource.NewModel("hipsterbrown", "waveshare-roarm", "gripper")
 )
 
+const (
+	// gripperOpenRad / gripperGrabRad match the joint-6 limits from
+	// controller.RoArmM3JointLimits. Using the actual limit extremes
+	// avoids the off-by-range problem that existed when these were
+	// hardcoded degree values (100, -10) combined with the pi-minus-radian
+	// transform.
+	gripperOpenRad = 1.9  // upper limit of joint 6 (fully open)
+	gripperGrabRad = -0.2 // lower limit of joint 6 (fully closed)
+)
+
 // RoArmGripperConfig configuration for the RoArm-M3 gripper
 type RoArmGripperConfig struct {
 	// HTTP configuration
@@ -112,8 +122,8 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	g.isMoving.Store(true)
 	defer g.isMoving.Store(false)
 
-	// Open position: 100 degrees (fully open based on SDK limits)
-	err := g.controller.SetGripperPosition(100, 500, 50)
+	// Open position: joint-6 upper limit (fully open).
+	err := g.controller.SetJointRadian(6, gripperOpenRad, 500, 50)
 	if err != nil {
 		return fmt.Errorf("failed to open gripper: %w", err)
 	}
@@ -133,8 +143,8 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	g.isMoving.Store(true)
 	defer g.isMoving.Store(false)
 
-	// Grab position: -10 degrees (fully closed based on SDK limits)
-	err := g.controller.SetGripperPosition(-10, 500, 50)
+	// Grab position: joint-6 lower limit (fully closed).
+	err := g.controller.SetJointRadian(6, gripperGrabRad, 500, 50)
 	if err != nil {
 		return false, fmt.Errorf("failed to grab with gripper: %w", err)
 	}
@@ -142,17 +152,21 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	// Wait for movement to complete
 	time.Sleep(1 * time.Second)
 
-	// Check if something was grabbed by reading the gripper position
-	// If the gripper couldn't close fully, it likely grabbed something
-	position, err := g.controller.GetGripperPosition()
+	// Check if something was grabbed by reading the gripper position.
+	// If the gripper couldn't fully close to the lower limit, it likely
+	// grabbed something.
+	radians, err := g.controller.GetJointRadians()
 	if err != nil {
 		g.logger.Warnf("Failed to read gripper position after grab: %v", err)
 		// Assume grab was successful if we can't read position
 		return true, nil
 	}
-
-	// If the gripper is significantly less than 100 degrees, something is blocking it
-	grabbed := position > 0.0
+	if len(radians) < 6 {
+		return true, nil
+	}
+	gripperRad := radians[5]
+	// If we couldn't fully close to the lower limit, something is in the way.
+	grabbed := gripperRad > gripperGrabRad+0.05 // ~3 degree margin
 
 	if grabbed {
 		g.logger.Debug("Gripper successfully grabbed an object")
