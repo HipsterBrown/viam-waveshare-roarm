@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 	"time"
 
@@ -104,6 +105,7 @@ type RoArmController struct {
 	httpTimeout   time.Duration
 	serialTimeout time.Duration
 	tracker       *motionTracker
+	verboseWire   bool
 }
 
 // RoArmConfig represents the configuration for the RoArm controller
@@ -128,6 +130,7 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 		serialTimeout: DefaultSerialTimeout,
 		logger:        config.Logger,
 		tracker:       newMotionTracker(),
+		verboseWire:   os.Getenv("ROARM_WIRE_TRACE") == "1",
 	}
 
 	// Use default logger if none provided
@@ -312,7 +315,9 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 	// Add newline to command
 	cmdBytes = append(cmdBytes, '\n')
 
-	c.logger.Debugf("Sending serial command: %s", string(cmdBytes))
+	if c.verboseWire {
+		c.logger.Debugf("Sending serial command: %s", string(cmdBytes))
+	}
 
 	// Flush any stale firmware feedback sitting in the input buffer so that
 	// earlier streaming frames aren't parsed as this command's response.
@@ -366,7 +371,9 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 		}
 
 		responseBuffer.Write(buffer[:n])
-		c.logger.Debugf("Received serial data: %s", string(buffer[:n]))
+		if c.verboseWire {
+			c.logger.Debugf("Received serial data: %s", string(buffer[:n]))
+		}
 
 		// Limit buffer size to prevent unbounded growth
 		if responseBuffer.Len() > maxFrameLength {
@@ -391,7 +398,9 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 				// Extract the JSON data
 				jsonData := response[startIndex : endIndex+1] // Include the closing brace
 
-				c.logger.Debugf("Parsing JSON response: %s", string(jsonData))
+				if c.verboseWire {
+					c.logger.Debugf("Parsing JSON response: %s", string(jsonData))
+				}
 
 				var feedback FeedbackData
 				if err := json.Unmarshal(jsonData, &feedback); err != nil {
