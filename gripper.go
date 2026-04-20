@@ -108,7 +108,7 @@ func (g *roarmM3Gripper) Name() resource.Name {
 	return g.name
 }
 
-// Open opens the gripper (sets to 100 degrees - fully open)
+// Open opens the gripper (moves joint 6 to its upper limit (fully open))
 func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{}) error {
 	if g.closed.Load() {
 		return errGripperClosed
@@ -140,7 +140,7 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	return nil
 }
 
-// Grab closes the gripper to grab an object (sets to -10 degrees - fully closed)
+// Grab closes the gripper to grab an object (moves joint 6 to its lower limit (fully closed))
 func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{}) (bool, error) {
 	if g.closed.Load() {
 		return false, errGripperClosed

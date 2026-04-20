@@ -21,8 +21,8 @@ The arm component controls the first 5 joints of the RoArm-M3: base, shoulder, e
 ```json
 {
   "host": "192.168.4.1",
-  "speed_degs_per_sec": 30,
-  "acceleration_degs_per_sec_per_sec": 80
+  "speed_degs_per_sec": 50,
+  "acceleration_degs_per_sec_per_sec": 100
 }
 ```
 
@@ -32,8 +32,8 @@ Or for serial communication:
 {
   "port": "/dev/ttyUSB0",
   "baudrate": 115200,
-  "speed_degs_per_sec": 30,
-  "acceleration_degs_per_sec_per_sec": 80
+  "speed_degs_per_sec": 50,
+  "acceleration_degs_per_sec_per_sec": 100
 }
 ```
 
@@ -41,16 +41,17 @@ Or for serial communication:
 
 The following attributes are available for the arm component:
 
-| Name                                | Type     | Inclusion    | Description                                                                                                    |
-|-------------------------------------|----------|--------------|----------------------------------------------------------------------------------------------------------------|
-| `host`                              | string   | Optional*    | The IP address of the RoArm-M3 for HTTP communication.                                                        |
-| `port`                              | string   | Optional*    | The serial port for direct communication.                                                                     |
-| `baudrate`                          | int      | Optional     | The baud rate for serial communication. Default is `115200`.                                                  |
-| `timeout`                           | duration | Optional     | Communication timeout. Default is `5s` for HTTP, `1s` for serial.                                           |
-| `speed_degs_per_sec`                | float32  | Optional     | The rotational speed for arm movements (must be between 3 and 180). Default is 30 degrees/second.       |
-| `acceleration_degs_per_sec_per_sec` | float32  | Optional     | The acceleration for arm movements (must be between 10 and 500). Default is 80 degrees/second^2.        |
+| Name                                | Type             | Inclusion    | Description                                                                                                    |
+|-------------------------------------|------------------|--------------|----------------------------------------------------------------------------------------------------------------|
+| `host`                              | string           | Optional*    | The IP address of the RoArm-M3 for HTTP communication.                                                        |
+| `port`                              | string           | Optional*    | The serial port for direct communication.                                                                     |
+| `baudrate`                          | int              | Optional     | The baud rate for serial communication. Default is `115200`.                                                  |
+| `http_timeout`                      | duration         | Optional     | HTTP communication timeout. Accepts a duration string (e.g. `"5s"`) or integer nanoseconds. Default is `5s`.  |
+| `serial_timeout`                    | duration         | Optional     | Serial communication timeout. Accepts a duration string (e.g. `"1s"`) or integer nanoseconds. Default is `1s`.|
+| `speed_degs_per_sec`                | float32          | Optional     | The rotational speed for arm movements (must be between 3 and 180). Default is `50` degrees/second.           |
+| `acceleration_degs_per_sec_per_sec` | float32          | Optional     | The acceleration for arm movements (must be between 10 and 500). Default is `100` degrees/second^2.           |
 
-*Either `host` or `port` must be specified, but not both
+*Either `host` or `port` must be specified, but not both.
 
 ### Communication Methods
 
@@ -63,7 +64,7 @@ For direct USB/serial connection:
 {
   "port": "/dev/ttyUSB0",
   "baudrate": 115200,
-  "timeout": "1s",
+  "serial_timeout": "1s",
   "speed_degs_per_sec": 50,
   "acceleration_degs_per_sec_per_sec": 100
 }
@@ -75,7 +76,7 @@ For wireless control over WiFi:
 ```json
 {
   "host": "192.168.4.1",
-  "timeout": "5s",
+  "http_timeout": "5s",
   "speed_degs_per_sec": 50,
   "acceleration_degs_per_sec_per_sec": 100
 }
@@ -91,7 +92,8 @@ Change the rotational speed of the joints (3-180 degrees/second):
 
 ```json
 {
-    "set_speed": 75
+    "command": "set_speed",
+    "value": 75
 }
 ```
 
@@ -100,17 +102,8 @@ Change the acceleration of joints (10-500 degrees/second²):
 
 ```json
 {
-    "set_acceleration": 150
-}
-```
-
-#### Set Both Speed and Acceleration
-Change both speed and acceleration simultaneously:
-
-```json
-{
-    "set_speed":        60,
-    "set_acceleration": 120
+    "command": "set_acceleration",
+    "value": 150
 }
 ```
 
@@ -119,7 +112,7 @@ Retrieve current speed and acceleration settings:
 
 ```json
 {
-    "get_motion_params": true
+    "command": "get_motion_params"
 }
 ```
 
@@ -161,53 +154,32 @@ Retrieve comprehensive arm status including positions, torques, and Cartesian co
 }
 ```
 
-#### Controller Status
-Check the shared controller status for debugging:
-
-```json
-{
-    "command": "controller_status"
-}
-```
-
 
 ## Model hipsterbrown:waveshare-roarm:gripper
 
 The gripper component controls the 6th joint of the RoArm-M3, which functions as a parallel gripper.
 
+The gripper shares hardware (HTTP/serial transport) with the arm it is paired with by borrowing the arm's controller handle. As a result the gripper configuration only needs a reference to the arm it depends on — no `host`/`port`/`baudrate`/timeout fields are required (or accepted).
+
 ### Configuration
 
-This should be the same as the arm component.
-
 ```json
 {
-  "host": "192.168.4.1",
-  "speed_degs_per_sec": 30,
-  "acceleration_degs_per_sec_per_sec": 80
-}
-```
-
-Or for serial communication:
-
-```json
-{
-  "port": "/dev/ttyUSB0",
-  "baudrate": 115200,
-  "speed_degs_per_sec": 30,
-  "acceleration_degs_per_sec_per_sec": 80
+  "name": "my-gripper",
+  "api": "rdk:component:gripper",
+  "model": "hipsterbrown:waveshare-roarm:gripper",
+  "attributes": {
+    "arm": "my-arm"
+  },
+  "depends_on": ["my-arm"]
 }
 ```
 
 ### Attributes
 
-| Name                                | Type     | Inclusion    | Description                                                                                                    |
-|-------------------------------------|----------|--------------|----------------------------------------------------------------------------------------------------------------|
-| `host`                              | string   | Optional*    | The IP address of the RoArm-M3 for HTTP communication.                                                        |
-| `port`                              | string   | Optional*    | The serial port for direct communication.                                                                     |
-| `baudrate`                          | int      | Optional     | The baud rate for serial communication. Default is `115200`.                                                  |
-| `timeout`                           | duration | Optional     | Communication timeout. Default is `5s` for HTTP, `1s` for serial.                                           |
-
-*Either `host` or `port` must be specified, but not both.
+| Name  | Type   | Inclusion | Description                                                                                          |
+|-------|--------|-----------|------------------------------------------------------------------------------------------------------|
+| `arm` | string | Required  | The name of the arm resource this gripper shares hardware with. Must refer to a `waveshare-roarm:arm`. |
 
 ### DoCommand
 
@@ -233,6 +205,22 @@ Set the gripper to a specific position (-10 to 100 degrees):
     "acc": 50
 }
 ```
+
+## Frame System
+
+The gripper exposes a bounding-box geometry (roughly 70 mm × 40 mm × 60 mm, offset 30 mm beyond the wrist) that the motion service can treat as an obstacle during planning. For that geometry to be placed correctly in the world, the gripper's parent frame must be declared at the machine-config level — typically `link4` of the arm, which is the end of the arm's kinematic chain.
+
+Add a `frame` block to the gripper component in your machine config:
+
+```json
+"frame": {
+  "parent": "<arm-name>:link4",
+  "translation": {"x": 0, "y": 0, "z": 0},
+  "orientation": {"type": "euler_angles", "value": {"pitch": 0, "roll": 0, "yaw": 0}}
+}
+```
+
+Replace `<arm-name>` with the `name` of your `waveshare-roarm:arm` component. Without this frame declaration, the gripper's bounding box will not be attached to the arm's end effector and motion planning will not account for it.
 
 ## Joint Limits and Specifications
 
@@ -274,15 +262,9 @@ The arm connects to your existing WiFi network. You'll need to configure this th
    - Verify the correct port (Linux: `/dev/ttyUSB0`, `/dev/ttyACM0`; Windows: `COM3`, `COM4`, etc.)
    - Ensure no other applications are using the serial port
 
-3. **Shared Controller Conflicts**:
-   - Check controller status using the `controller_status` DoCommand
-   - Ensure consistent configuration across all components
-   - Restart the module if configuration changes are needed
-
 ### Performance Tips
 
 - Use HTTP communication for better performance when possible
-- The module uses a shared controller architecture to prevent resource conflicts
 - Joint position caching has been removed for more consistent real-time feedback
 
 ## WaveShare RoArm-M3 Resources
