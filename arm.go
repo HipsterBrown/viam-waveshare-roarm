@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	commonpb "go.viam.com/api/common/v1"
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/operation"
@@ -55,6 +56,8 @@ type RoArmM3Config struct {
 	// Motion configuration
 	SpeedDegsPerSec        float32 `json:"speed_degs_per_sec,omitempty"`
 	AccelerationDegsPerSec float32 `json:"acceleration_degs_per_sec_per_sec,omitempty"`
+
+	Motion string `json:"motion,omitempty"`
 }
 
 var validBaudrates = map[int]bool{
@@ -74,7 +77,16 @@ func (cfg *RoArmM3Config) Validate(path string) ([]string, []string, error) {
 	if !validBaudrates[cfg.Baudrate] {
 		return nil, nil, fmt.Errorf("%s: baudrate %d not supported", path, cfg.Baudrate)
 	}
-	return nil, nil, nil
+
+	deps := []string{}
+
+	if cfg.Motion != "" {
+		deps = append(deps, motion.Named(cfg.Motion).String())
+	} else {
+		deps = append(deps, motion.Named("builtin").String())
+	}
+
+	return deps, nil, nil
 }
 
 type roarmM3 struct {
@@ -96,6 +108,8 @@ type roarmM3 struct {
 
 	cancelCtx  context.Context
 	cancelFunc func()
+
+	motion motion.Service
 }
 
 func makeRoArmModelFrame() (referenceframe.Model, error) {
@@ -167,6 +181,22 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		return nil, fmt.Errorf("failed to create kinematic model: %w", err)
 	}
 
+	var ms motion.Service
+	if conf.Motion != "" {
+		if deps == nil {
+			return nil, fmt.Errorf("no deps")
+		}
+		ms, err = motion.FromProvider(deps, conf.Motion)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		ms, err = motion.FromProvider(deps, "builtin")
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
 	arm := &roarmM3{
@@ -181,6 +211,7 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		defaultAcc:   defaultAcc,
 		cancelCtx:    cancelCtx,
 		cancelFunc:   cancelFunc,
+		motion:       ms,
 	}
 
 	logger.Infof("RoArm-M3 configured with speed: %.1f deg/s (internal: %d), acceleration: %.1f deg/s² (internal: %d)",
@@ -191,6 +222,10 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 
 func (r *roarmM3) Name() resource.Name {
 	return r.name
+}
+
+func (r *roarmM3) Status(ctx context.Context) (map[string]interface{}, error) {
+	return nil, nil
 }
 
 func (r *roarmM3) NewClientFromConn(ctx context.Context, conn rpc.ClientConn, remoteName string, name resource.Name, logger logging.Logger) (arm.Arm, error) {
@@ -208,11 +243,9 @@ func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{})
 	}
 
 	pose, err := r.model.Transform(inputs)
-	// pose, err := referenceframe.ComputeOOBPosition(r.model, inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute end position: %w", err)
 	}
-	r.logger.Infof("Current pose: %w", pose)
 
 	return pose, nil
 }
@@ -221,10 +254,21 @@ func (r *roarmM3) MoveToPosition(ctx context.Context, pose spatialmath.Pose, ext
 	if r.closed.Load() {
 		return errClosed
 	}
-	if err := motion.MoveArm(ctx, r.logger, r, pose); err != nil {
-		return err
+
+	planExtra := map[string]any{"goal_metric_type": "position_only"}
+	for k, v := range extra {
+		planExtra[k] = v
 	}
-	return nil
+
+	_, err := r.motion.Move(
+		ctx,
+		motion.MoveReq{
+			ComponentName: r.Name().Name,
+			Destination:   referenceframe.NewPoseInFrame(fmt.Sprintf("%v_origin", r.Name().Name), pose),
+			Extra:         planExtra,
+		},
+	)
+	return err
 }
 
 func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenceframe.Input, extra map[string]interface{}) error {
@@ -246,14 +290,9 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 		return fmt.Errorf("expected 5 joint positions for arm, got %d", len(positions))
 	}
 
-	values := make([]float64, len(positions))
-	for i, input := range positions {
-		values[i] = input.Value
-	}
-
 	// Validate input ranges and clamp positions for the 5 arm joints
-	clampedPositions := make([]float64, len(values))
-	for i, pos := range values {
+	clampedPositions := make([]float64, len(positions))
+	for i, pos := range positions {
 		min, max := jointLimits[i][0], jointLimits[i][1]
 
 		// Validate and clamp the position
@@ -388,10 +427,7 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 
 	// Convert to Viam input format
 	positions := make([]referenceframe.Input, 5)
-	for i, radian := range armRadians {
-		positions[i] = referenceframe.Input{Value: radian}
-	}
-	r.logger.Infof("JointPositions: %w", armRadians)
+	copy(positions, armRadians)
 
 	return positions, nil
 }
@@ -594,6 +630,10 @@ func (r *roarmM3) Geometries(ctx context.Context, extra map[string]interface{}) 
 		return nil, err
 	}
 	return gif.Geometries(), nil
+}
+
+func (r *roarmM3) Get3DModels(ctx context.Context, extra map[string]interface{}) (map[string]*commonpb.Mesh, error) {
+	return nil, nil
 }
 
 func (r *roarmM3) Close(ctx context.Context) error {

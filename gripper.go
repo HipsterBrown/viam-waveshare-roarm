@@ -92,7 +92,7 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		return nil, err
 	}
 
-	armRes, err := arm.FromDependencies(deps, cfg.Arm)
+	armRes, err := arm.FromProvider(deps, cfg.Arm)
 	if err != nil {
 		return nil, fmt.Errorf("gripper %s: could not find arm %q in deps: %w", conf.ResourceName(), cfg.Arm, err)
 	}
@@ -110,6 +110,10 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 
 func (g *roarmM3Gripper) Name() resource.Name {
 	return g.name
+}
+
+func (g *roarmM3Gripper) Status(ctx context.Context) (map[string]interface{}, error) {
+	return nil, nil
 }
 
 // setGripperRad commands joint 6 to a software-frame radian via the arm's
@@ -313,7 +317,7 @@ func (g *roarmM3Gripper) CurrentInputs(ctx context.Context) ([]referenceframe.In
 	radians := position * math.Pi / 180.0
 
 	return []referenceframe.Input{
-		{Value: radians},
+		radians,
 	}, nil
 }
 
@@ -331,7 +335,7 @@ func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referencefr
 		}
 
 		// Convert radians to degrees
-		degrees := inputSet[0].Value * 180.0 / math.Pi
+		degrees := inputSet[0] * 180.0 / math.Pi
 
 		if err := g.SetPosition(ctx, degrees, 500, 50); err != nil {
 			return err

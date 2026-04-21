@@ -154,12 +154,31 @@ Retrieve comprehensive arm status including positions, torques, and Cartesian co
 }
 ```
 
+> [!NOTE]
+> When invoking `DoCommand` via `viam machines part run`, the full request body must wrap the command map under the proto `command` field — for example:
+> ```
+> viam machines part run --part <part-id> --component <arm-name> \
+>   --method DoCommand --data '{"command":{"command":"get_feedback"}}'
+> ```
+
+#### Gripper RPC bridge (internal)
+
+The following commands exist to let the companion gripper component
+control joint 6 through this arm. They are not intended for direct user
+use, but are documented here for completeness:
+
+| Command             | Params                                     | Returns                             | Notes                                                                 |
+|---------------------|--------------------------------------------|-------------------------------------|-----------------------------------------------------------------------|
+| `get_gripper_rad`   | —                                          | `{"rad": <float>}`                  | Current joint-6 position in software-frame radians.                   |
+| `set_gripper_rad`   | `{"rad": <float>, "speed"?, "acc"?}`       | `{"success": true}`                 | Commands joint 6 to `rad` (software frame). Applies the firmware π-radian transform internally. |
+| `stop_gripper`      | —                                          | `{"success": true}`                 | Soft-hold: re-sends the current joint-6 position as the target.       |
+
 
 ## Model hipsterbrown:waveshare-roarm:gripper
 
 The gripper component controls the 6th joint of the RoArm-M3, which functions as a parallel gripper.
 
-The gripper shares hardware (HTTP/serial transport) with the arm it is paired with by borrowing the arm's controller handle. As a result the gripper configuration only needs a reference to the arm it depends on — no `host`/`port`/`baudrate`/timeout fields are required (or accepted).
+The gripper does not own its own hardware connection. It holds an arm-component client (obtained via the `arm` dependency) and routes every joint-6 operation — opening, closing, position reads, soft-stop — through the arm's `DoCommand` RPC bridge. The only gripper attribute is the name of the arm it pairs with; no `host`/`port`/`baudrate`/timeout fields are required (or accepted).
 
 ### Configuration
 
@@ -266,6 +285,23 @@ The arm connects to your existing WiFi network. You'll need to configure this th
 
 - Use HTTP communication for better performance when possible
 - Joint position caching has been removed for more consistent real-time feedback
+- To trace raw serial frames while debugging wire issues, set the `ROARM_WIRE_TRACE=1` environment variable before starting the module. Each sent command and received buffer will be logged at debug level.
+
+### Data Robustness
+
+The module reads joint positions from the firmware's JSON feedback stream.
+Two robustness layers are applied to handle occasional wire-level issues:
+
+- **Torn-frame recovery**: if the firmware occasionally emits a torn blob
+  (two partial frames merged without a `}\r\n{` boundary between them), the
+  reader walks `}\r\n` terminators from most recent to oldest and falls
+  back to any clean earlier frame in the buffer rather than surfacing a
+  parse error.
+- **Gripper frame transform**: joint 6 uses a firmware frame that is
+  offset and inverted from the software frame (`raw closed ≈ π rad`).
+  All gripper reads and writes apply the `π − r` transform so that the
+  software API stays in the `[-0.2, 1.9]` rad ( `~−11°` to `~109°` )
+  convention inherited from the upstream Waveshare Python SDK.
 
 ## WaveShare RoArm-M3 Resources
 
