@@ -75,23 +75,23 @@ func (c *Command) MarshalJSON() ([]byte, error) {
 
 // FeedbackData represents the feedback response from the RoArm
 type FeedbackData struct {
-	T   int     `json:"T"`
-	X   float64 `json:"x"`
-	Y   float64 `json:"y"`
-	Z   float64 `json:"z"`
-	Tit float64 `json:"tit"` // Pitch
-	B   float64 `json:"b"`   // Joint 1 (base)
-	S   float64 `json:"s"`   // Joint 2 (shoulder)
-	E   float64 `json:"e"`   // Joint 3 (elbow)
-	Wrist float64 `json:"t"` // Joint 4 (wrist)
-	R   float64 `json:"r"`   // Joint 5 (roll)
-	G   float64 `json:"g"`   // Joint 6 (gripper)
-	TB  float64 `json:"tB"`  // Torque Joint 1
-	TS  float64 `json:"tS"`  // Torque Joint 2
-	TE  float64 `json:"tE"`  // Torque Joint 3
-	TT  float64 `json:"tT"`  // Torque Joint 4
-	TR  float64 `json:"tR"`  // Torque Joint 5
-	TG  float64 `json:"tG"`  // Torque Joint 6
+	T     int     `json:"T"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Z     float64 `json:"z"`
+	Tit   float64 `json:"tit"` // Pitch
+	B     float64 `json:"b"`   // Joint 1 (base)
+	S     float64 `json:"s"`   // Joint 2 (shoulder)
+	E     float64 `json:"e"`   // Joint 3 (elbow)
+	Wrist float64 `json:"t"`   // Joint 4 (wrist)
+	R     float64 `json:"r"`   // Joint 5 (roll)
+	G     float64 `json:"g"`   // Joint 6 (gripper)
+	TB    float64 `json:"tB"`  // Torque Joint 1
+	TS    float64 `json:"tS"`  // Torque Joint 2
+	TE    float64 `json:"tE"`  // Torque Joint 3
+	TT    float64 `json:"tT"`  // Torque Joint 4
+	TR    float64 `json:"tR"`  // Torque Joint 5
+	TG    float64 `json:"tG"`  // Torque Joint 6
 }
 
 // RoArmController handles communication with the WaveShare RoArm-M3
@@ -213,6 +213,45 @@ func parseLastJSONFrame(buf []byte) (jsonData []byte, ok bool) {
 		return nil, false
 	}
 	return buf[startIndex : endIndex+1], true
+}
+
+// extractLastValidFeedback walks `}\r\n`-delimited frames in buf from most
+// recent to oldest, attempting to parse each as FeedbackData. The firmware
+// occasionally emits torn output — e.g. two partial frames concatenated
+// with no `}\r\n{` boundary between them — which would make the outermost
+// `{...}\r\n` window a corrupt blob. When that happens, skip the corrupt
+// window and fall back to any clean earlier frame in the buffer rather
+// than surfacing a parse error. Counterpart to the Python reference SDK's
+// readline + json.loads + clear_buffer recovery in roarm_sdk/common.py.
+//
+// Returns the parsed feedback, the raw JSON slice (for debug logging),
+// and ok=true when a clean frame was found. ok=false means no complete,
+// parseable frame exists yet — the caller should keep reading.
+func extractLastValidFeedback(buf []byte) (*FeedbackData, []byte, bool) {
+	frameEnd := []byte("}\r\n")
+	frameStart := []byte("{")
+	windowEnd := len(buf)
+	for windowEnd > 0 {
+		endIdx := bytes.LastIndex(buf[:windowEnd], frameEnd)
+		if endIdx < 0 {
+			return nil, nil, false
+		}
+		startIdx := bytes.LastIndex(buf[:endIdx], frameStart)
+		if startIdx < 0 {
+			// No `{` before this `}\r\n`; try earlier `}\r\n` terminators.
+			windowEnd = endIdx
+			continue
+		}
+		candidate := buf[startIdx : endIdx+1]
+		var fb FeedbackData
+		if err := json.Unmarshal(candidate, &fb); err == nil {
+			return &fb, candidate, true
+		}
+		// Candidate is corrupt — narrow the search to content strictly
+		// before its `{` so the next iteration considers earlier frames.
+		windowEnd = startIdx
+	}
+	return nil, nil, false
 }
 
 // acceptableResponseTs returns the set of response T values the firmware
@@ -402,34 +441,30 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 			}
 		}
 
-		// Look for complete JSON frame
-		if jsonData, ok := parseLastJSONFrame(responseBuffer.Bytes()); ok {
-			if c.verboseWire {
-				c.logger.Debugf("Parsing JSON response: %s", string(jsonData))
-			}
-
-			var feedback FeedbackData
-			if err := json.Unmarshal(jsonData, &feedback); err != nil {
-				// Log the error but continue trying to read more data
-				c.logger.Warnf("Failed to unmarshal JSON response: %v, data: %s", err, string(jsonData))
-				// Clear the buffer and continue
-				responseBuffer.Reset()
-				continue
-			}
-
-			// Only accept response frames whose T matches what the firmware
-			// is expected to send for this request T. Stale streaming frames
-			// (e.g. unsolicited 1051 feedback) are dropped and we keep reading.
-			accept := acceptableResponseTs(requestT)
-			if accept != nil && !accept[feedback.T] {
-				c.logger.Warnf("dropping stale/unexpected response frame T=%d (wanted one of %v)",
-					feedback.T, keysOf(accept))
-				responseBuffer.Reset()
-				continue
-			}
-
-			return &feedback, nil
+		// Look for the most recent valid JSON frame. When the firmware
+		// emits a torn blob (two partial frames merged without a
+		// `}\r\n{` boundary) extractLastValidFeedback walks earlier
+		// `}\r\n` terminators, so we only surface clean frames.
+		feedback, jsonData, ok := extractLastValidFeedback(responseBuffer.Bytes())
+		if !ok {
+			continue
 		}
+		if c.verboseWire {
+			c.logger.Debugf("Parsing JSON response: %s", string(jsonData))
+		}
+
+		// Only accept response frames whose T matches what the firmware
+		// is expected to send for this request T. Stale streaming frames
+		// (e.g. unsolicited 1051 feedback) are dropped and we keep reading.
+		accept := acceptableResponseTs(requestT)
+		if accept != nil && !accept[feedback.T] {
+			c.logger.Warnf("dropping stale/unexpected response frame T=%d (wanted one of %v)",
+				feedback.T, keysOf(accept))
+			responseBuffer.Reset()
+			continue
+		}
+
+		return feedback, nil
 	}
 }
 
@@ -527,11 +562,20 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 			joint, radian, limits[0], limits[1])
 	}
 
+	// Joint 6 (gripper) firmware frame is offset/inverted from the software
+	// frame the limits are expressed in: raw firmware "closed" ≈ π rad, so
+	// map software-frame radians to firmware via π - r. Measured on hardware
+	// 2026-04-20 (feedback.G read 3.177 rad with gripper ~closed).
+	wireRadian := radian
+	if joint == 6 {
+		wireRadian = math.Pi - radian
+	}
+
 	cmd := &Command{
 		T: JOINT_RADIAN_CTRL,
 		Data: map[string]interface{}{
 			"joint": joint,
-			"rad":   radian,
+			"rad":   wireRadian,
 			"spd":   speed,
 			"acc":   acc,
 		},
@@ -570,6 +614,8 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 		}
 	}
 
+	// Joint 6 (gripper): software frame → firmware frame via π - r.
+	// See SetJointRadian for the hardware-measured justification.
 	cmd := &Command{
 		T: JOINTS_RADIAN_CTRL,
 		Data: map[string]interface{}{
@@ -578,7 +624,7 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 			"elbow":    radians[2],
 			"wrist":    radians[3],
 			"roll":     radians[4],
-			"hand":     radians[5],
+			"hand":     math.Pi - radians[5],
 			"spd":      speed,
 			"acc":      acc,
 		},
@@ -606,14 +652,17 @@ func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error
 		return nil, err
 	}
 
-	// Extract joint positions and apply coordinate transformations
+	// Extract joint positions and apply coordinate transformations.
+	// Joint 6 (gripper): firmware → software frame via π - G, inverse of
+	// the transform in SetJointRadian(s). See that function for the
+	// hardware-measured justification.
 	radians := []float64{
-		feedback.B,  // Joint 1
-		feedback.S,  // Joint 2
-		feedback.E,  // Joint 3
-		feedback.Wrist, // Joint 4
-		feedback.R,  // Joint 5
-		feedback.G,  // Joint 6 (gripper) - no transformation applied (see plan task 2.5)
+		feedback.B,           // Joint 1
+		feedback.S,           // Joint 2
+		feedback.E,           // Joint 3
+		feedback.Wrist,       // Joint 4
+		feedback.R,           // Joint 5
+		math.Pi - feedback.G, // Joint 6 (gripper)
 	}
 
 	return radians, nil

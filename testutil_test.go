@@ -2,6 +2,7 @@ package waveshareroarm
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -129,3 +130,60 @@ func (f *fakeController) NoteMotionDeadline(deadline time.Time) {
 }
 
 func (f *fakeController) Close(ctx context.Context) error { return nil }
+
+// fakeArmRPC implements the narrow armRPC interface the gripper consumes.
+// Only `get_gripper_rad`, `set_gripper_rad`, and `stop_gripper` commands
+// are dispatched — matching what the gripper actually sends. Tests can
+// configure the simulated joint-6 reading via Joint6Rad and inspect the
+// last commanded value via LastSetRad.
+type fakeArmRPC struct {
+	mu             sync.Mutex
+	Joint6Rad      float64
+	LastCommand    string
+	LastSetRad     float64
+	LastSetSpeed   int
+	LastSetAcc     int
+	StopCalls      int
+	MoveDeadline   time.Time
+	DoCommandError error
+	IsMovingError  error
+}
+
+func (f *fakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.DoCommandError != nil {
+		return nil, f.DoCommandError
+	}
+	name, _ := cmd["command"].(string)
+	f.LastCommand = name
+	switch name {
+	case "get_gripper_rad":
+		return map[string]interface{}{"rad": f.Joint6Rad}, nil
+	case "set_gripper_rad":
+		rad, _ := cmd["rad"].(float64)
+		f.LastSetRad = rad
+		if v, ok := cmd["speed"].(float64); ok {
+			f.LastSetSpeed = int(v)
+		}
+		if v, ok := cmd["acc"].(float64); ok {
+			f.LastSetAcc = int(v)
+		}
+		f.Joint6Rad = rad
+		return map[string]interface{}{"success": true}, nil
+	case "stop_gripper":
+		f.StopCalls++
+		f.LastSetRad = f.Joint6Rad
+		return map[string]interface{}{"success": true}, nil
+	}
+	return nil, fmt.Errorf("fakeArmRPC: unknown command %q", name)
+}
+
+func (f *fakeArmRPC) IsMoving(ctx context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.IsMovingError != nil {
+		return false, f.IsMovingError
+	}
+	return time.Now().Before(f.MoveDeadline), nil
+}

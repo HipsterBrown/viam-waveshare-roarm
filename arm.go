@@ -58,7 +58,7 @@ type RoArmM3Config struct {
 }
 
 var validBaudrates = map[int]bool{
-	0: true, // zero means "use default" (115200)
+	0:    true, // zero means "use default" (115200)
 	9600: true, 19200: true, 38400: true, 57600: true,
 	115200: true, 230400: true, 921600: true, 1000000: true,
 }
@@ -208,9 +208,11 @@ func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{})
 	}
 
 	pose, err := r.model.Transform(inputs)
+	// pose, err := referenceframe.ComputeOOBPosition(r.model, inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute end position: %w", err)
 	}
+	r.logger.Infof("Current pose: %w", pose)
 
 	return pose, nil
 }
@@ -389,6 +391,7 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 	for i, radian := range armRadians {
 		positions[i] = referenceframe.Input{Value: radian}
 	}
+	r.logger.Infof("JointPositions: %w", armRadians)
 
 	return positions, nil
 }
@@ -520,6 +523,52 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 			"current_acceleration_degs_per_sec_per_sec": accelFromUnits(r.defaultAcc),
 		}, nil
 
+	// Gripper <-> arm RPC bridge. The gripper component holds an arm.Arm
+	// client (not a local struct reference), so every joint-6 interaction
+	// must cross the gRPC boundary via DoCommand.
+	case "get_gripper_rad":
+		radians, err := r.controller.GetJointRadians(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(radians) < 6 {
+			return nil, fmt.Errorf("get_gripper_rad: short feedback (got %d joints)", len(radians))
+		}
+		return map[string]interface{}{"rad": radians[5]}, nil
+
+	case "set_gripper_rad":
+		rad, ok := cmd["rad"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("set_gripper_rad requires 'rad' number")
+		}
+		speed := 500
+		acc := 50
+		if v, ok := cmd["speed"].(float64); ok {
+			speed = int(v)
+		}
+		if v, ok := cmd["acc"].(float64); ok {
+			acc = int(v)
+		}
+		if err := r.controller.SetJointRadian(ctx, 6, rad, speed, acc); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"success": true}, nil
+
+	case "stop_gripper":
+		// Soft hold: read the current software-frame gripper position and
+		// re-send it as the target at a gentle speed. Matches arm-level Stop.
+		radians, err := r.controller.GetJointRadians(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("stop_gripper: read position: %w", err)
+		}
+		if len(radians) < 6 {
+			return nil, fmt.Errorf("stop_gripper: short feedback (got %d joints)", len(radians))
+		}
+		if err := r.controller.SetJointRadian(ctx, 6, radians[5], 100, 50); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"success": true}, nil
+
 	default:
 		return nil, fmt.Errorf("unknown command: %v", cmd["command"])
 	}
@@ -559,12 +608,6 @@ func (r *roarmM3) Close(ctx context.Context) error {
 		return r.controller.Close(ctx)
 	}
 	return nil
-}
-
-// Handle returns the underlying controller for sibling resources (e.g. gripper).
-// Package-private: not part of the public Viam API.
-func (r *roarmM3) Handle() RoArmHandle {
-	return r.controller
 }
 
 // Reconfigure updates the arm's configuration. Connectivity-affecting fields

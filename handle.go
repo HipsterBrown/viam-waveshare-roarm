@@ -5,8 +5,11 @@ import (
 	"time"
 )
 
-// RoArmHandle is the narrow interface other resources (like the gripper)
-// consume when borrowing the arm's serial/HTTP handle.
+// RoArmHandle is the narrow interface the arm consumes to talk to its
+// serial/HTTP controller. It exists as a seam so tests can inject a
+// fakeController. Sibling resources (e.g. gripper) do not use this
+// interface; they hold an arm.Arm gRPC client and invoke joint-6
+// operations through the arm's DoCommand bridge.
 type RoArmHandle interface {
 	SetTorque(ctx context.Context, enable bool) error
 	SetLED(ctx context.Context, brightness int) error

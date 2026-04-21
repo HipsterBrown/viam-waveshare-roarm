@@ -421,14 +421,6 @@ func TestArmClose(t *testing.T) {
 	}
 }
 
-func TestArmHandle(t *testing.T) {
-	fc := &fakeController{}
-	r := newTestArm(t, fc)
-	if r.Handle() == nil {
-		t.Fatal("expected non-nil handle")
-	}
-}
-
 func TestArmMoveThroughJointPositions(t *testing.T) {
 	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
 	r := newTestArm(t, fc)

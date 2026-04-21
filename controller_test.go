@@ -3,6 +3,7 @@ package waveshareroarm
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -118,6 +119,70 @@ func TestParseLastJSONFrame_Empty(t *testing.T) {
 	_, ok := parseLastJSONFrame([]byte(""))
 	if ok {
 		t.Fatal("expected not ok")
+	}
+}
+
+func TestExtractLastValidFeedback_CleanSingle(t *testing.T) {
+	fb, _, ok := extractLastValidFeedback([]byte("{\"T\":1051,\"b\":0.5}\r\n"))
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if fb.T != 1051 || fb.B != 0.5 {
+		t.Fatalf("unexpected feedback: %+v", fb)
+	}
+}
+
+func TestExtractLastValidFeedback_MultipleCleanReturnsLatest(t *testing.T) {
+	buf := []byte("{\"T\":1,\"b\":0.1}\r\n{\"T\":1051,\"b\":0.9}\r\n")
+	fb, _, ok := extractLastValidFeedback(buf)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if fb.T != 1051 || fb.B != 0.9 {
+		t.Fatalf("expected the later frame, got %+v", fb)
+	}
+}
+
+// Regression guard: the firmware occasionally emits a torn blob where two
+// partial frames are concatenated without the intervening `}\r\n{` boundary
+// (e.g. "...,\"g\":3.1768742\"x\":..."). The outermost {...}\r\n window
+// wraps garbage that won't parse. When a clean earlier frame exists in
+// the buffer, we should fall back to it rather than failing.
+func TestExtractLastValidFeedback_CorruptLatestFallsBackToClean(t *testing.T) {
+	clean := "{\"T\":1051,\"b\":0.42}\r\n"
+	// Corrupt blob: two partial frames merged, mid-number splice, no
+	// interior `{` so the outermost window is the whole mess.
+	corrupt := "{\"T\":1051,\"x\":1.0,\"g\":3.1768742\"x\":1.0,\"g\":3.176874212,\"tR\":0}\r\n"
+	buf := []byte(clean + corrupt)
+	fb, _, ok := extractLastValidFeedback(buf)
+	if !ok {
+		t.Fatal("expected recovery to the clean earlier frame")
+	}
+	if fb.T != 1051 || fb.B != 0.42 {
+		t.Fatalf("expected the clean frame, got %+v", fb)
+	}
+}
+
+// Regression guard for the specific garbage reported from live hardware on
+// 2026-04-20. Two FeedbackData bodies merged without `}\r\n{` separation;
+// no clean frame anywhere in the buffer. Must return not-ok (caller keeps
+// reading) rather than surfacing a parse error.
+func TestExtractLastValidFeedback_PureGarbageReturnsNotOk(t *testing.T) {
+	garbage := []byte(`{"T":1051,"x":48.78839104,"y":1.047927472,"z":552.6022117,"tit":-1.55852448,"b":0.021475731,"s":0.006135923,"e":0.004601942,"t":0.001533981,"r":0.001533981,"g":3.1768742"x":48.78839104,"y":1.047927472,"z":552.6022117,"tit":-1.55852448,"b":0.021475731,"s":0.006135923,"e":0.004601942,"t":0.001533981,"r":0.001533981,"g":3.176874212,"tB":-109,"tS":45,"tE":29,"tT":21,"tR":0}` + "\r\n")
+	if fb, _, ok := extractLastValidFeedback(garbage); ok {
+		t.Fatalf("expected not ok for pure garbage, got %+v", fb)
+	}
+}
+
+func TestExtractLastValidFeedback_NoDelimiter(t *testing.T) {
+	if _, _, ok := extractLastValidFeedback([]byte("{\"T\":1051,\"b\":0}")); ok {
+		t.Fatal("expected not ok when `}\\r\\n` terminator missing")
+	}
+}
+
+func TestExtractLastValidFeedback_Empty(t *testing.T) {
+	if _, _, ok := extractLastValidFeedback(nil); ok {
+		t.Fatal("expected not ok for empty buffer")
 	}
 }
 
@@ -296,6 +361,9 @@ func TestHTTPGetFeedback(t *testing.T) {
 }
 
 func TestHTTPGetJointRadians(t *testing.T) {
+	// Joints 1-5 pass through as raw feedback; joint 6 (gripper) is
+	// transformed from firmware frame (≈π at closed) to software frame
+	// (≈0 at closed) via π - G.
 	c, srv := newHTTPTestController(t, 1051, FeedbackData{B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5, G: 0.6})
 	defer srv.Close()
 	defer c.Close(context.Background())
@@ -307,8 +375,83 @@ func TestHTTPGetJointRadians(t *testing.T) {
 	if len(rads) != 6 {
 		t.Fatalf("expected 6, got %d", len(rads))
 	}
-	if rads[0] != 0.1 || rads[5] != 0.6 {
-		t.Fatalf("unexpected radians: %v", rads)
+	if rads[0] != 0.1 {
+		t.Fatalf("unexpected joint 1 radians: %v", rads)
+	}
+	const epsilon = 1e-9
+	wantGripper := math.Pi - 0.6
+	if diff := rads[5] - wantGripper; diff > epsilon || diff < -epsilon {
+		t.Fatalf("expected joint 6 ≈ %v (π-G), got %v", wantGripper, rads[5])
+	}
+}
+
+// TestJoint6FirmwareFrameTransform verifies the π-radian transform on the
+// set side: software-frame radians → firmware-frame wire payload.
+// Regression guard for hardware validation 2026-04-20: with the gripper
+// physically ~closed the firmware reports G≈π, which means the limits
+// [-0.2, 1.9] are expressed in the software frame and must be mapped via
+// π - r on the way out.
+func TestJoint6FirmwareFrameTransform(t *testing.T) {
+	var captured struct {
+		rad  float64 // SetJointRadian (single-joint path)
+		hand float64 // SetJointRadians (6-joint path)
+	}
+	seenBoth := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := r.URL.Query().Get("json")
+		var payload map[string]interface{}
+		_ = json.Unmarshal([]byte(raw), &payload)
+		if rad, ok := payload["rad"].(float64); ok {
+			captured.rad = rad
+		}
+		if hand, ok := payload["hand"].(float64); ok {
+			captured.hand = hand
+			seenBoth = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(FeedbackData{T: 1051})
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewRoArmController(&RoArmConfig{Host: u.Host, HTTPTimeout: Duration(2 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(context.Background())
+
+	ctx := context.Background()
+
+	// Single-joint path: software 0 rad for joint 6 → firmware π on the wire.
+	if err := c.SetJointRadian(ctx, 6, 0, 500, 50); err != nil {
+		t.Fatal(err)
+	}
+	if diff := captured.rad - math.Pi; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("SetJointRadian: expected wire rad≈π (software 0), got %v", captured.rad)
+	}
+
+	// Non-gripper joints unaffected.
+	if err := c.SetJointRadian(ctx, 1, 0.5, 500, 50); err != nil {
+		t.Fatal(err)
+	}
+	if captured.rad != 0.5 {
+		t.Fatalf("SetJointRadian joint 1: expected wire rad=0.5 (no transform), got %v", captured.rad)
+	}
+
+	// Six-joint path: software 1.9 (gripperOpenRad) → firmware ≈ π - 1.9.
+	if err := c.SetJointRadians(ctx, []float64{0, 0, 0, 0, 0, 1.9}, 500, 50); err != nil {
+		t.Fatal(err)
+	}
+	wantHand := math.Pi - 1.9
+	if diff := captured.hand - wantHand; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("SetJointRadians: expected wire hand≈%v (π-1.9), got %v", wantHand, captured.hand)
+	}
+	if !seenBoth {
+		t.Fatal("did not observe hand field in 6-joint payload")
 	}
 }
 
