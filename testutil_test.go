@@ -158,20 +158,20 @@ func (f *fakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) 
 	name, _ := cmd["command"].(string)
 	f.LastCommand = name
 	switch name {
-	case "get_gripper_rad":
-		return map[string]interface{}{"rad": f.Joint6Rad}, nil
-	case "set_gripper_rad":
-		rad, _ := cmd["rad"].(float64)
+	case cmdGetGripperRad:
+		return map[string]interface{}{keyRad: f.Joint6Rad}, nil
+	case cmdSetGripperRad:
+		rad, _ := cmd[keyRad].(float64)
 		f.LastSetRad = rad
-		if v, ok := cmd["speed"].(float64); ok {
+		if v, ok := cmd[keySpeed].(float64); ok {
 			f.LastSetSpeed = int(v)
 		}
-		if v, ok := cmd["acc"].(float64); ok {
+		if v, ok := cmd[keyAcc].(float64); ok {
 			f.LastSetAcc = int(v)
 		}
 		f.Joint6Rad = rad
 		return map[string]interface{}{"success": true}, nil
-	case "stop_gripper":
+	case cmdStopGripper:
 		f.StopCalls++
 		f.LastSetRad = f.Joint6Rad
 		return map[string]interface{}{"success": true}, nil

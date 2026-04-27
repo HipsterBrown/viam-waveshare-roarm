@@ -117,13 +117,13 @@ func (g *roarmM3Gripper) Status(ctx context.Context) (map[string]interface{}, er
 }
 
 // setGripperRad commands joint 6 to a software-frame radian via the arm's
-// DoCommand bridge. Speed/acc defaults mirror the arm's internal defaults.
+// DoCommand bridge. See gripper_bridge.go for the protocol.
 func (g *roarmM3Gripper) setGripperRad(ctx context.Context, rad float64, speed, acc int) error {
 	_, err := g.armClient.DoCommand(ctx, map[string]interface{}{
-		"command": "set_gripper_rad",
-		"rad":     rad,
-		"speed":   float64(speed),
-		"acc":     float64(acc),
+		"command": cmdSetGripperRad,
+		keyRad:    rad,
+		keySpeed:  float64(speed),
+		keyAcc:    float64(acc),
 	})
 	return err
 }
@@ -132,14 +132,14 @@ func (g *roarmM3Gripper) setGripperRad(ctx context.Context, rad float64, speed, 
 // arm's DoCommand bridge.
 func (g *roarmM3Gripper) getGripperRad(ctx context.Context) (float64, error) {
 	out, err := g.armClient.DoCommand(ctx, map[string]interface{}{
-		"command": "get_gripper_rad",
+		"command": cmdGetGripperRad,
 	})
 	if err != nil {
 		return 0, err
 	}
-	rad, ok := out["rad"].(float64)
+	rad, ok := out[keyRad].(float64)
 	if !ok {
-		return 0, fmt.Errorf("get_gripper_rad: missing or non-numeric 'rad' in response: %v", out)
+		return 0, fmt.Errorf("%s: missing or non-numeric %q in response: %v", cmdGetGripperRad, keyRad, out)
 	}
 	return rad, nil
 }
@@ -155,7 +155,7 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	if err := g.setGripperRad(ctx, gripperOpenRad, 500, 50); err != nil {
+	if err := g.setGripperRad(ctx, gripperOpenRad, defaultGripperSpeed, defaultGripperAcc); err != nil {
 		return fmt.Errorf("failed to open gripper: %w", err)
 	}
 	g.holding.Store(false)
@@ -182,7 +182,7 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	if err := g.setGripperRad(ctx, gripperGrabRad, 500, 50); err != nil {
+	if err := g.setGripperRad(ctx, gripperGrabRad, defaultGripperSpeed, defaultGripperAcc); err != nil {
 		return false, fmt.Errorf("failed to grab with gripper: %w", err)
 	}
 
@@ -222,7 +222,7 @@ func (g *roarmM3Gripper) Stop(ctx context.Context, extra map[string]interface{})
 	}
 	g.opMgr.CancelRunning(ctx)
 	_, err := g.armClient.DoCommand(ctx, map[string]interface{}{
-		"command": "stop_gripper",
+		"command": cmdStopGripper,
 	})
 	return err
 }
@@ -337,7 +337,7 @@ func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referencefr
 		// Convert radians to degrees
 		degrees := inputSet[0] * 180.0 / math.Pi
 
-		if err := g.SetPosition(ctx, degrees, 500, 50); err != nil {
+		if err := g.SetPosition(ctx, degrees, defaultGripperSpeed, defaultGripperAcc); err != nil {
 			return err
 		}
 

@@ -18,6 +18,13 @@ import (
 	"go.viam.com/rdk/logging"
 )
 
+// gripperSoftwareToWire converts joint 6 between the software reference frame
+// (used by Viam APIs and joint limits) and the firmware wire frame. The
+// firmware reports raw "closed" at roughly π rad, so the two frames are
+// related by r_wire = π - r_software. The transform is its own inverse, so
+// the same function converts either direction.
+func gripperSoftwareToWire(r float64) float64 { return math.Pi - r }
+
 const (
 	// Command types matching the Python SDK
 	ECHO_SET                     = 605
@@ -221,8 +228,7 @@ func parseLastJSONFrame(buf []byte) (jsonData []byte, ok bool) {
 // with no `}\r\n{` boundary between them — which would make the outermost
 // `{...}\r\n` window a corrupt blob. When that happens, skip the corrupt
 // window and fall back to any clean earlier frame in the buffer rather
-// than surfacing a parse error. Counterpart to the Python reference SDK's
-// readline + json.loads + clear_buffer recovery in roarm_sdk/common.py.
+// than surfacing a parse error.
 //
 // Returns the parsed feedback, the raw JSON slice (for debug logging),
 // and ok=true when a clean frame was found. ok=false means no complete,
@@ -562,13 +568,9 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 			joint, radian, limits[0], limits[1])
 	}
 
-	// Joint 6 (gripper) firmware frame is offset/inverted from the software
-	// frame the limits are expressed in: raw firmware "closed" ≈ π rad, so
-	// map software-frame radians to firmware via π - r. Measured on hardware
-	// 2026-04-20 (feedback.G read 3.177 rad with gripper ~closed).
 	wireRadian := radian
 	if joint == 6 {
-		wireRadian = math.Pi - radian
+		wireRadian = gripperSoftwareToWire(radian)
 	}
 
 	cmd := &Command{
@@ -614,8 +616,6 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 		}
 	}
 
-	// Joint 6 (gripper): software frame → firmware frame via π - r.
-	// See SetJointRadian for the hardware-measured justification.
 	cmd := &Command{
 		T: JOINTS_RADIAN_CTRL,
 		Data: map[string]interface{}{
@@ -624,7 +624,7 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 			"elbow":    radians[2],
 			"wrist":    radians[3],
 			"roll":     radians[4],
-			"hand":     math.Pi - radians[5],
+			"hand":     gripperSoftwareToWire(radians[5]),
 			"spd":      speed,
 			"acc":      acc,
 		},
@@ -652,17 +652,13 @@ func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error
 		return nil, err
 	}
 
-	// Extract joint positions and apply coordinate transformations.
-	// Joint 6 (gripper): firmware → software frame via π - G, inverse of
-	// the transform in SetJointRadian(s). See that function for the
-	// hardware-measured justification.
 	radians := []float64{
-		feedback.B,           // Joint 1
-		feedback.S,           // Joint 2
-		feedback.E,           // Joint 3
-		feedback.Wrist,       // Joint 4
-		feedback.R,           // Joint 5
-		math.Pi - feedback.G, // Joint 6 (gripper)
+		feedback.B,                          // Joint 1
+		feedback.S,                          // Joint 2
+		feedback.E,                          // Joint 3
+		feedback.Wrist,                      // Joint 4
+		feedback.R,                          // Joint 5
+		gripperSoftwareToWire(feedback.G),   // Joint 6 (gripper)
 	}
 
 	return radians, nil

@@ -78,15 +78,15 @@ func (cfg *RoArmM3Config) Validate(path string) ([]string, []string, error) {
 		return nil, nil, fmt.Errorf("%s: baudrate %d not supported", path, cfg.Baudrate)
 	}
 
-	deps := []string{}
+	return []string{motion.Named(cfg.motionName()).String()}, nil, nil
+}
 
+// motionName returns the configured motion service name, defaulting to "builtin".
+func (cfg *RoArmM3Config) motionName() string {
 	if cfg.Motion != "" {
-		deps = append(deps, motion.Named(cfg.Motion).String())
-	} else {
-		deps = append(deps, motion.Named("builtin").String())
+		return cfg.Motion
 	}
-
-	return deps, nil, nil
+	return "builtin"
 }
 
 type roarmM3 struct {
@@ -181,20 +181,9 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		return nil, fmt.Errorf("failed to create kinematic model: %w", err)
 	}
 
-	var ms motion.Service
-	if conf.Motion != "" {
-		if deps == nil {
-			return nil, fmt.Errorf("no deps")
-		}
-		ms, err = motion.FromProvider(deps, conf.Motion)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		ms, err = motion.FromProvider(deps, "builtin")
-		if err != nil {
-			return nil, err
-		}
+	ms, err := motion.FromProvider(deps, conf.motionName())
+	if err != nil {
+		return nil, err
 	}
 
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
@@ -408,28 +397,38 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 	// r.controller is swapped only in Reconfigure, which takes r.mu.Lock().
 	// Briefly lock to snapshot, then release before the blocking serial I/O
 	// so concurrent callers (e.g. EndPosition) don't deadlock on re-entry.
-	r.mu.Lock()
-	ctrl := r.controller
-	r.mu.Unlock()
-
-	// Get all joint positions from controller (includes gripper)
-	allRadians, err := ctrl.GetJointRadians(ctx)
+	allRadians, err := r.readAllJointRadians(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read joint positions: %w", err)
 	}
 
-	// Only return the first 5 joints (arm joints, excluding gripper)
-	if len(allRadians) < 5 {
-		return nil, fmt.Errorf("expected at least 5 joint positions, got %d", len(allRadians))
-	}
-
-	armRadians := allRadians[:5]
-
-	// Convert to Viam input format
 	positions := make([]referenceframe.Input, 5)
-	copy(positions, armRadians)
-
+	copy(positions, allRadians[:5])
 	return positions, nil
+}
+
+// snapshotController returns r.controller under r.mu. r.controller is swapped
+// only in Reconfigure, which takes r.mu.Lock(); snapshotting and releasing
+// before the blocking serial I/O prevents deadlocks when other methods
+// (e.g. EndPosition) re-enter through CurrentInputs.
+func (r *roarmM3) snapshotController() RoArmHandle {
+	r.mu.Lock()
+	ctrl := r.controller
+	r.mu.Unlock()
+	return ctrl
+}
+
+// readAllJointRadians snapshots the controller, reads all 6 joints, and
+// enforces the 6-element invariant for callers that index into the slice.
+func (r *roarmM3) readAllJointRadians(ctx context.Context) ([]float64, error) {
+	radians, err := r.snapshotController().GetJointRadians(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(radians) < 6 {
+		return nil, fmt.Errorf("short feedback (got %d joints)", len(radians))
+	}
+	return radians, nil
 }
 
 func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error {
@@ -559,48 +558,45 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 			"current_acceleration_degs_per_sec_per_sec": accelFromUnits(r.defaultAcc),
 		}, nil
 
-	// Gripper <-> arm RPC bridge. The gripper component holds an arm.Arm
-	// client (not a local struct reference), so every joint-6 interaction
-	// must cross the gRPC boundary via DoCommand.
-	case "get_gripper_rad":
-		radians, err := r.controller.GetJointRadians(ctx)
+	// Gripper ↔ arm DoCommand bridge. See gripper_bridge.go.
+	case cmdGetGripperRad:
+		radians, err := r.readAllJointRadians(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s: %w", cmdGetGripperRad, err)
 		}
-		if len(radians) < 6 {
-			return nil, fmt.Errorf("get_gripper_rad: short feedback (got %d joints)", len(radians))
-		}
-		return map[string]interface{}{"rad": radians[5]}, nil
+		return map[string]interface{}{keyRad: radians[5]}, nil
 
-	case "set_gripper_rad":
-		rad, ok := cmd["rad"].(float64)
+	case cmdSetGripperRad:
+		rad, ok := cmd[keyRad].(float64)
 		if !ok {
-			return nil, fmt.Errorf("set_gripper_rad requires 'rad' number")
+			return nil, fmt.Errorf("%s requires %q number", cmdSetGripperRad, keyRad)
 		}
-		speed := 500
-		acc := 50
-		if v, ok := cmd["speed"].(float64); ok {
+		speed := defaultGripperSpeed
+		acc := defaultGripperAcc
+		if v, ok := cmd[keySpeed].(float64); ok {
 			speed = int(v)
 		}
-		if v, ok := cmd["acc"].(float64); ok {
+		if v, ok := cmd[keyAcc].(float64); ok {
 			acc = int(v)
 		}
-		if err := r.controller.SetJointRadian(ctx, 6, rad, speed, acc); err != nil {
+		ctrl := r.snapshotController()
+		if err := ctrl.SetJointRadian(ctx, 6, rad, speed, acc); err != nil {
 			return nil, err
 		}
 		return map[string]interface{}{"success": true}, nil
 
-	case "stop_gripper":
+	case cmdStopGripper:
 		// Soft hold: read the current software-frame gripper position and
 		// re-send it as the target at a gentle speed. Matches arm-level Stop.
-		radians, err := r.controller.GetJointRadians(ctx)
+		ctrl := r.snapshotController()
+		radians, err := ctrl.GetJointRadians(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("stop_gripper: read position: %w", err)
+			return nil, fmt.Errorf("%s: read position: %w", cmdStopGripper, err)
 		}
 		if len(radians) < 6 {
-			return nil, fmt.Errorf("stop_gripper: short feedback (got %d joints)", len(radians))
+			return nil, fmt.Errorf("%s: short feedback (got %d joints)", cmdStopGripper, len(radians))
 		}
-		if err := r.controller.SetJointRadian(ctx, 6, radians[5], 100, 50); err != nil {
+		if err := ctrl.SetJointRadian(ctx, 6, radians[5], stopGripperSpeed, defaultGripperAcc); err != nil {
 			return nil, err
 		}
 		return map[string]interface{}{"success": true}, nil

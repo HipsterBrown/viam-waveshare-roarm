@@ -298,7 +298,7 @@ func TestGripperGoToInputs_WrongLength(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for wrong length")
 	}
-	err = g.GoToInputs(context.Background(), []referenceframe.Input{{Value: 0}, {Value: 1}})
+	err = g.GoToInputs(context.Background(), []referenceframe.Input{0, 1})
 	if err == nil {
 		t.Fatal("expected error for inputSet length != 1")
 	}
@@ -309,7 +309,7 @@ func TestGripperGoToInputs_Valid(t *testing.T) {
 	g := newTestGripper(t, fa)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = g.GoToInputs(ctx, []referenceframe.Input{{Value: 0.5}})
+	_ = g.GoToInputs(ctx, []referenceframe.Input{0.5})
 	if fa.LastCommand != "set_gripper_rad" {
 		t.Fatalf("expected set_gripper_rad dispatched, got %q", fa.LastCommand)
 	}
@@ -336,7 +336,7 @@ func TestGripperAfterClose_ReturnErrors(t *testing.T) {
 	if _, err := g.CurrentInputs(context.Background()); err == nil {
 		t.Fatal("expected error")
 	}
-	if err := g.GoToInputs(context.Background(), []referenceframe.Input{{Value: 0}}); err == nil {
+	if err := g.GoToInputs(context.Background(), []referenceframe.Input{0}); err == nil {
 		t.Fatal("expected error")
 	}
 	if _, err := g.DoCommand(context.Background(), map[string]interface{}{}); err == nil {
