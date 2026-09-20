@@ -564,11 +564,12 @@ func TestArmReconfigure_FailedReopenKeepsOldController(t *testing.T) {
 	}
 }
 
-// Reconfigure swaps the controller under r.mu; readers must go through
-// snapshotController. Run with -race.
+// Reconfigure swaps r.controller under r.mu; readers must go through
+// snapshotController. This performs exactly that write, so -race flags any
+// reader that touches r.controller directly. Run with -race.
 func TestArmReconfigure_RacesWithReaders(t *testing.T) {
-	fc := &fakeController{}
-	r := newTestArm(t, fc)
+	fcA, fcB := &fakeController{}, &fakeController{}
+	r := newTestArm(t, fcA)
 	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
 	done := make(chan struct{})
 	go func() {
@@ -580,12 +581,13 @@ func TestArmReconfigure_RacesWithReaders(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 50; i++ {
-		conf := resource.Config{Name: "arm", ConvertedAttributes: &RoArmM3Config{
-			Host: "1.2.3.4", SpeedDegsPerSec: float32(40 + i%20),
-		}}
-		if err := r.Reconfigure(context.Background(), nil, conf); err != nil {
-			t.Fatal(err)
+		ctrl := RoArmHandle(fcA)
+		if i%2 == 1 {
+			ctrl = fcB
 		}
+		r.mu.Lock()
+		r.controller = ctrl
+		r.mu.Unlock()
 	}
 	<-done
 }
