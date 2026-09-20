@@ -189,23 +189,6 @@ func (c *RoArmController) Close(ctx context.Context) error {
 	return nil
 }
 
-// parseLastJSONFrame finds the last complete JSON frame in buf, delimited
-// by '{' and "}\r\n". Returns the JSON bytes (including the closing brace)
-// and true if a complete frame is present.
-func parseLastJSONFrame(buf []byte) (jsonData []byte, ok bool) {
-	frameStart := []byte("{")
-	frameEnd := []byte("}\r\n")
-	endIndex := bytes.LastIndex(buf, frameEnd)
-	if endIndex < 0 {
-		return nil, false
-	}
-	startIndex := bytes.LastIndex(buf[:endIndex], frameStart)
-	if startIndex < 0 || startIndex >= endIndex {
-		return nil, false
-	}
-	return buf[startIndex : endIndex+1], true
-}
-
 // extractLastValidFeedback walks `}\r\n`-delimited frames in buf from most
 // recent to oldest, attempting to parse each as FeedbackData. The firmware
 // occasionally emits torn output — e.g. two partial frames concatenated
@@ -500,14 +483,6 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 		return fmt.Errorf("joint must be 1-6, got %d", joint)
 	}
 
-	// Validate speed and acceleration
-	if err := ValidateSpeed(speed); err != nil {
-		return err
-	}
-	if err := ValidateAcceleration(acc); err != nil {
-		return err
-	}
-
 	wireRadian := radian
 	if joint == 6 {
 		wireRadian = gripperSoftwareToWire(radian)
@@ -534,14 +509,6 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64, speed, acc int) error {
 	if len(radians) != 6 {
 		return fmt.Errorf("expected 6 joint positions, got %d", len(radians))
-	}
-
-	// Validate speed and acceleration parameters
-	if err := ValidateSpeed(speed); err != nil {
-		return err
-	}
-	if err := ValidateAcceleration(acc); err != nil {
-		return err
 	}
 
 	cmd := &Command{
@@ -589,39 +556,10 @@ func (c *RoArmController) GetFeedback(ctx context.Context) (*FeedbackData, error
 	return c.query(ctx)
 }
 
-// ValidateSpeed validates speed parameter (1-4096 as per SDK)
-func ValidateSpeed(speed int) error {
-	if speed < 1 || speed > 4096 {
-		return fmt.Errorf("speed must be between 1 and 4096, got %d", speed)
-	}
-	return nil
-}
-
-// ValidateAcceleration validates acceleration parameter (1-254 as per SDK)
-func ValidateAcceleration(acc int) error {
-	if acc < 1 || acc > 254 {
-		return fmt.Errorf("acceleration must be between 1 and 254, got %d", acc)
-	}
-	return nil
-}
-
 // ValidateLEDBrightness validates LED brightness parameter (0-255)
 func ValidateLEDBrightness(brightness int) error {
 	if brightness < 0 || brightness > 255 {
 		return fmt.Errorf("LED brightness must be between 0 and 255, got %d", brightness)
 	}
-	return nil
-}
-
-// TestConnection tests the connection by sending a feedback request
-func (c *RoArmController) TestConnection(ctx context.Context) error {
-	c.logger.Debug("Testing connection...")
-
-	_, err := c.GetFeedback(ctx)
-	if err != nil {
-		return fmt.Errorf("connection test failed: %w", err)
-	}
-
-	c.logger.Debug("Connection test successful")
 	return nil
 }

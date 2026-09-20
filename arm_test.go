@@ -29,8 +29,8 @@ func TestMoveClampsToJointLimits(t *testing.T) {
 	fc.Feedback = FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
+		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
+		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -52,8 +52,8 @@ func TestMoveClampsBelowMinimum(t *testing.T) {
 	fc.Feedback = FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
+		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
+		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -73,8 +73,8 @@ func TestMoveRejectsWrongLengthInput(t *testing.T) {
 	fc := &fakeController{}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
+		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
+		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -93,8 +93,8 @@ func TestEndPositionDoesNotDeadlock(t *testing.T) {
 	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
+		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
+		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -111,8 +111,8 @@ func newTestArm(t *testing.T, fc *fakeController) *roarmM3 {
 	t.Helper()
 	return &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
+		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
+		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -279,10 +279,10 @@ func TestDoCommand_GetMotionParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := speedFromUnits(speedToUnits(defaultSpeedDegsPerSec)); out["current_speed_degs_per_sec"] != want {
+	if want := speedFromUnits(speedToUnits(DefaultSpeedDegsPerSec)); out["current_speed_degs_per_sec"] != want {
 		t.Fatalf("expected current_speed_degs_per_sec=%v, got %v", want, out["current_speed_degs_per_sec"])
 	}
-	if want := accelFromUnits(accelToUnits(defaultAccelDegsPerSecSq)); out["current_acceleration_degs_per_sec_per_sec"] != want {
+	if want := accelFromUnits(accelToUnits(DefaultAccelDegsPerSecSq)); out["current_acceleration_degs_per_sec_per_sec"] != want {
 		t.Fatalf("expected current_acceleration_degs_per_sec_per_sec=%v, got %v", want, out["current_acceleration_degs_per_sec_per_sec"])
 	}
 }
@@ -364,8 +364,6 @@ func TestArmIsMoving(t *testing.T) {
 func TestArmGeometriesAfterClose(t *testing.T) {
 	fc := &fakeController{}
 	r := newTestArm(t, fc)
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancelCtx, r.cancelFunc = ctx, cancel
 	_ = r.Close(context.Background())
 	if _, err := r.Geometries(context.Background(), nil); err == nil {
 		t.Fatal("expected error after close")
@@ -375,8 +373,6 @@ func TestArmGeometriesAfterClose(t *testing.T) {
 func TestArmEndPositionAfterClose(t *testing.T) {
 	fc := &fakeController{}
 	r := newTestArm(t, fc)
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancelCtx, r.cancelFunc = ctx, cancel
 	_ = r.Close(context.Background())
 	if _, err := r.EndPosition(context.Background(), nil); err == nil {
 		t.Fatal("expected error after close")
@@ -386,8 +382,6 @@ func TestArmEndPositionAfterClose(t *testing.T) {
 func TestArmClose(t *testing.T) {
 	fc := &fakeController{}
 	r := newTestArm(t, fc)
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancelCtx, r.cancelFunc = ctx, cancel
 	if err := r.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +481,7 @@ func TestArmStopHoldsCurrentPosition(t *testing.T) {
 		Feedback: FeedbackData{B: 0.5, S: 0.3, E: 0.1, Wrist: 0.2, R: 0.4, G: 0.0},
 	}
 	r := &roarmM3{
-		controller: fc, defaultSpeed: speedToUnits(defaultSpeedDegsPerSec), defaultAcc: accelToUnits(defaultAccelDegsPerSecSq),
+		controller: fc, defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec), defaultAcc: accelToUnits(DefaultAccelDegsPerSecSq),
 		jointLimits: jointLimitsFromModel(mustLoadModel(t)),
 		logger:      logging.NewTestLogger(t),
 		opMgr:       operation.NewSingleOperationManager(),
@@ -513,8 +507,8 @@ func TestMovePreservesGripperPosition(t *testing.T) {
 	fc.Feedback = FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0.5}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
+		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
+		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -595,8 +589,8 @@ func TestMoveToJointPositions_WritesThenSettles(t *testing.T) {
 	if fc.LastRadians[0] != 0.5 || fc.LastRadians[5] != 0.7 {
 		t.Fatalf("target %v: want joint 1 at 0.5 and gripper preserved at 0.7", fc.LastRadians)
 	}
-	if fc.LastSpeed != speedToUnits(defaultSpeedDegsPerSec) {
-		t.Fatalf("speed %d, want configured default %d", fc.LastSpeed, speedToUnits(defaultSpeedDegsPerSec))
+	if fc.LastSpeed != speedToUnits(DefaultSpeedDegsPerSec) {
+		t.Fatalf("speed %d, want configured default %d", fc.LastSpeed, speedToUnits(DefaultSpeedDegsPerSec))
 	}
 }
 
@@ -615,7 +609,7 @@ func TestMoveToJointPositions_IgnoresExtraSpeed(t *testing.T) {
 	if err := r.MoveToJointPositions(context.Background(), []referenceframe.Input{0.1, 0, 0, 0, 0}, extra); err != nil {
 		t.Fatal(err)
 	}
-	if fc.LastSpeed != speedToUnits(defaultSpeedDegsPerSec) {
+	if fc.LastSpeed != speedToUnits(DefaultSpeedDegsPerSec) {
 		t.Fatalf("extra speed must be ignored; got %d", fc.LastSpeed)
 	}
 }

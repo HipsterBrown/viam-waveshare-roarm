@@ -19,8 +19,8 @@ const (
 	minAccelUnits, maxAccelUnits = 1, 254
 
 	// Motion defaults, in physical units; converted where they are sent.
-	defaultSpeedDegsPerSec        = 50.0
-	defaultAccelDegsPerSecSq      = 100.0
+	DefaultSpeedDegsPerSec        = 50.0
+	DefaultAccelDegsPerSecSq      = 100.0
 	defaultGripperSpeedDegsPerSec = 50.0
 	defaultGripperAccDegsPerSecSq = 100.0
 	// stopSpeedDegsPerSec is the gentle speed Stop re-sends the current
@@ -56,5 +56,3 @@ func accelFromUnits(units int) float64 { return float64(units) * accUnitDegsPerS
 // Exported for cmd/cli. Everything inside the package uses the lowercase forms.
 func SpeedToUnits(degPerSec float64) int  { return speedToUnits(degPerSec) }
 func AccelToUnits(degPerSec2 float64) int { return accelToUnits(degPerSec2) }
-func DefaultSpeedUnits() int              { return speedToUnits(defaultSpeedDegsPerSec) }
-func DefaultAccelUnits() int              { return accelToUnits(defaultAccelDegsPerSecSq) }

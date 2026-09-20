@@ -119,12 +119,9 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 			segSpeed := speed
 			if idx == 0 {
 				wall = r.clock.Time()
-				current, err := ctrl.GetJointRadians(ctx)
+				current, err := readAllJointRadians(ctx, ctrl)
 				if err != nil {
 					return fmt.Errorf("streamed: read position before the first point: %w", err)
-				}
-				if len(current) < 6 {
-					return fmt.Errorf("streamed: short feedback (got %d joints)", len(current))
 				}
 				gripper = current[5]
 				first := append(append([]float64(nil), clamped...), gripper)

@@ -111,11 +111,11 @@ func (cfg *RoArmM3Config) motionName() string {
 func (cfg *RoArmM3Config) motionDefaults() (speedUnits, accUnits int) {
 	speed := float64(cfg.SpeedDegsPerSec)
 	if speed == 0 {
-		speed = defaultSpeedDegsPerSec
+		speed = DefaultSpeedDegsPerSec
 	}
 	acc := float64(cfg.AccelerationDegsPerSec)
 	if acc == 0 {
-		acc = defaultAccelDegsPerSecSq
+		acc = DefaultAccelDegsPerSecSq
 	}
 	return speedToUnits(speed), accelToUnits(acc)
 }
@@ -142,9 +142,6 @@ type roarmM3 struct {
 
 	// clock schedules streamed trajectories; the zero value is the real clock.
 	clock clock
-
-	cancelCtx  context.Context
-	cancelFunc func()
 
 	motion motion.Service
 }
@@ -210,8 +207,6 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		return nil, err
 	}
 
-	cancelCtx, cancelFunc := context.WithCancel(context.Background())
-
 	arm := &roarmM3{
 		name:         rawConf.ResourceName(),
 		cfg:          conf,
@@ -222,8 +217,6 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		jointLimits:  jointLimitsFromModel(model),
 		defaultSpeed: defaultSpeed,
 		defaultAcc:   defaultAcc,
-		cancelCtx:    cancelCtx,
-		cancelFunc:   cancelFunc,
 		motion:       ms,
 	}
 
@@ -311,12 +304,9 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	}
 
 	ctrl := r.snapshotController()
-	current, err := ctrl.GetJointRadians(ctx)
+	current, err := readAllJointRadians(ctx, ctrl)
 	if err != nil {
 		return fmt.Errorf("MoveToJointPositions: read current positions: %w", err)
-	}
-	if len(current) < 6 {
-		return fmt.Errorf("MoveToJointPositions: short feedback (got %d joints)", len(current))
 	}
 	target := make([]float64, 6)
 	copy(target, clamped)
@@ -382,7 +372,7 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 	// r.controller is swapped only in Reconfigure, which takes r.mu.Lock().
 	// Briefly lock to snapshot, then release before the blocking serial I/O
 	// so concurrent callers (e.g. EndPosition) don't deadlock on re-entry.
-	allRadians, err := r.readAllJointRadians(ctx)
+	allRadians, err := readAllJointRadians(ctx, r.snapshotController())
 	if err != nil {
 		return nil, fmt.Errorf("failed to read joint positions: %w", err)
 	}
@@ -403,10 +393,10 @@ func (r *roarmM3) snapshotController() RoArmHandle {
 	return ctrl
 }
 
-// readAllJointRadians snapshots the controller, reads all 6 joints, and
-// enforces the 6-element invariant for callers that index into the slice.
-func (r *roarmM3) readAllJointRadians(ctx context.Context) ([]float64, error) {
-	radians, err := r.snapshotController().GetJointRadians(ctx)
+// readAllJointRadians reads all 6 joints from ctrl and enforces the
+// 6-element invariant for callers that index into the slice.
+func readAllJointRadians(ctx context.Context, ctrl RoArmHandle) ([]float64, error) {
+	radians, err := ctrl.GetJointRadians(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -429,12 +419,9 @@ func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error 
 	acc := r.defaultAcc
 	r.mu.Unlock()
 
-	current, err := ctrl.GetJointRadians(ctx)
+	current, err := readAllJointRadians(ctx, ctrl)
 	if err != nil {
 		return fmt.Errorf("stop: read current positions: %w", err)
-	}
-	if len(current) < 6 {
-		return fmt.Errorf("stop: short feedback from controller (got %d joints)", len(current))
 	}
 	stopSpeed := speedToUnits(stopSpeedDegsPerSec) // gentle soft stop
 	return ctrl.SetJointRadians(ctx, current, stopSpeed, acc)
@@ -543,7 +530,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 
 	// Gripper ↔ arm DoCommand bridge. See gripper_bridge.go.
 	case cmdGetGripperRad:
-		radians, err := r.readAllJointRadians(ctx)
+		radians, err := readAllJointRadians(ctx, r.snapshotController())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", cmdGetGripperRad, err)
 		}
@@ -587,12 +574,9 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		// Soft hold: read the current software-frame gripper position and
 		// re-send it as the target at a gentle speed. Matches arm-level Stop.
 		ctrl := r.snapshotController()
-		radians, err := ctrl.GetJointRadians(ctx)
+		radians, err := readAllJointRadians(ctx, ctrl)
 		if err != nil {
 			return nil, fmt.Errorf("%s: read position: %w", cmdStopGripper, err)
-		}
-		if len(radians) < 6 {
-			return nil, fmt.Errorf("%s: short feedback (got %d joints)", cmdStopGripper, len(radians))
 		}
 		if err := ctrl.SetJointRadian(ctx, 6, radians[5], speedToUnits(stopSpeedDegsPerSec), accelToUnits(defaultGripperAccDegsPerSecSq)); err != nil {
 			return nil, err
@@ -637,7 +621,6 @@ func (r *roarmM3) Close(ctx context.Context) error {
 	if !r.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	r.cancelFunc()
 	r.opMgr.CancelRunning(ctx)
 	r.mu.Lock()
 	defer r.mu.Unlock()

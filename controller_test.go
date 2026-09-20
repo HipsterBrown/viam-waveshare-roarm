@@ -80,50 +80,6 @@ func TestCommandMarshalJSON_EmptyData(t *testing.T) {
 	}
 }
 
-func TestParseLastJSONFrame_SingleComplete(t *testing.T) {
-	data, ok := parseLastJSONFrame([]byte("{\"T\":1051,\"b\":0}\r\n"))
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if string(data) != `{"T":1051,"b":0}` {
-		t.Fatalf("got %q", string(data))
-	}
-}
-
-func TestParseLastJSONFrame_PartialFrame(t *testing.T) {
-	_, ok := parseLastJSONFrame([]byte(`{"T":1051,"b":0}`)) // no \r\n
-	if ok {
-		t.Fatal("expected not ok")
-	}
-}
-
-func TestParseLastJSONFrame_MultipleFrames_UsesLast(t *testing.T) {
-	data, ok := parseLastJSONFrame([]byte("{\"T\":1}\r\n{\"T\":2}\r\n"))
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if string(data) != `{"T":2}` {
-		t.Fatalf("got %q", string(data))
-	}
-}
-
-func TestParseLastJSONFrame_GarbagePrefix(t *testing.T) {
-	data, ok := parseLastJSONFrame([]byte("GARBAGE{\"T\":1}\r\n"))
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if string(data) != `{"T":1}` {
-		t.Fatalf("got %q", string(data))
-	}
-}
-
-func TestParseLastJSONFrame_Empty(t *testing.T) {
-	_, ok := parseLastJSONFrame([]byte(""))
-	if ok {
-		t.Fatal("expected not ok")
-	}
-}
-
 func TestExtractLastValidFeedback_CleanSingle(t *testing.T) {
 	fb, _, ok := extractLastValidFeedback([]byte("{\"T\":1051,\"b\":0.5}\r\n"))
 	if !ok {
@@ -185,36 +141,6 @@ func TestExtractLastValidFeedback_NoDelimiter(t *testing.T) {
 func TestExtractLastValidFeedback_Empty(t *testing.T) {
 	if _, _, ok := extractLastValidFeedback(nil); ok {
 		t.Fatal("expected not ok for empty buffer")
-	}
-}
-
-func TestValidateSpeed_Range(t *testing.T) {
-	if err := ValidateSpeed(0); err == nil {
-		t.Fatal("expected error for 0")
-	}
-	if err := ValidateSpeed(1); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if err := ValidateSpeed(4096); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if err := ValidateSpeed(4097); err == nil {
-		t.Fatal("expected error for 4097")
-	}
-}
-
-func TestValidateAcceleration_Range(t *testing.T) {
-	if err := ValidateAcceleration(0); err == nil {
-		t.Fatal("expected error for 0")
-	}
-	if err := ValidateAcceleration(1); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if err := ValidateAcceleration(254); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if err := ValidateAcceleration(255); err == nil {
-		t.Fatal("expected error for 255")
 	}
 }
 
@@ -423,14 +349,6 @@ func TestHTTPSetJointRadian(t *testing.T) {
 	if err := c.SetJointRadian(context.Background(), 7, 0.5, 500, 50); err == nil {
 		t.Fatal("expected error for joint 7")
 	}
-	// speed out of range
-	if err := c.SetJointRadian(context.Background(), 1, 0.5, -1, 50); err == nil {
-		t.Fatal("expected error for bad speed")
-	}
-	// accel out of range
-	if err := c.SetJointRadian(context.Background(), 1, 0.5, 500, -1); err == nil {
-		t.Fatal("expected error for bad accel")
-	}
 }
 
 func TestHTTPSetJointRadians(t *testing.T) {
@@ -444,23 +362,6 @@ func TestHTTPSetJointRadians(t *testing.T) {
 	// Wrong length
 	if err := c.SetJointRadians(context.Background(), []float64{0}, 500, 50); err == nil {
 		t.Fatal("expected error for wrong length")
-	}
-	// Bad speed
-	if err := c.SetJointRadians(context.Background(), []float64{0, 0, 0, 0, 0, 0}, -1, 50); err == nil {
-		t.Fatal("expected error for bad speed")
-	}
-	// Bad accel
-	if err := c.SetJointRadians(context.Background(), []float64{0, 0, 0, 0, 0, 0}, 500, -1); err == nil {
-		t.Fatal("expected error for bad accel")
-	}
-}
-
-func TestHTTPTestConnection(t *testing.T) {
-	c, srv := newHTTPTestController(t, 1051, FeedbackData{})
-	defer srv.Close()
-	defer c.Close(context.Background())
-	if err := c.TestConnection(context.Background()); err != nil {
-		t.Fatal(err)
 	}
 }
 

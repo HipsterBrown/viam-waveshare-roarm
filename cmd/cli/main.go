@@ -53,7 +53,7 @@ func main() {
 	args := flag.Args()
 	switch args[0] {
 	case "ping":
-		if err := ctrl.TestConnection(ctx); err != nil {
+		if _, err := ctrl.GetFeedback(ctx); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println("OK")
@@ -69,7 +69,7 @@ func main() {
 		}
 		joint := atoi(args[1])
 		rad := atof(args[2])
-		speed, acc := waveshareroarm.DefaultSpeedUnits(), waveshareroarm.DefaultAccelUnits()
+		speed, acc := waveshareroarm.SpeedToUnits(waveshareroarm.DefaultSpeedDegsPerSec), waveshareroarm.AccelToUnits(waveshareroarm.DefaultAccelDegsPerSecSq)
 		if len(args) > 3 {
 			speed = waveshareroarm.SpeedToUnits(atof(args[3]))
 		}
@@ -84,7 +84,7 @@ func main() {
 		if len(args) < 2 {
 			usage()
 		}
-		if err := ctrl.SetJointRadian(ctx, 6, atof(args[1]), waveshareroarm.DefaultSpeedUnits(), waveshareroarm.DefaultAccelUnits()); err != nil {
+		if err := ctrl.SetJointRadian(ctx, 6, atof(args[1]), waveshareroarm.SpeedToUnits(waveshareroarm.DefaultSpeedDegsPerSec), waveshareroarm.AccelToUnits(waveshareroarm.DefaultAccelDegsPerSecSq)); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println("OK")
@@ -103,7 +103,7 @@ func main() {
 // tolerance or stops moving, printing the elapsed time and the implied speed.
 func timeMove(ctx context.Context, ctrl *waveshareroarm.RoArmController, joint int, from, to, degPerSec float64) {
 	speed := waveshareroarm.SpeedToUnits(degPerSec)
-	acc := waveshareroarm.DefaultAccelUnits()
+	acc := waveshareroarm.AccelToUnits(waveshareroarm.DefaultAccelDegsPerSecSq)
 	mask := make([]bool, 6)
 	mask[joint-1] = true
 
