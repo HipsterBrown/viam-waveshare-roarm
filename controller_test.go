@@ -1,6 +1,7 @@
 package waveshareroarm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"math"
@@ -183,53 +184,6 @@ func TestExtractLastValidFeedback_NoDelimiter(t *testing.T) {
 func TestExtractLastValidFeedback_Empty(t *testing.T) {
 	if _, _, ok := extractLastValidFeedback(nil); ok {
 		t.Fatal("expected not ok for empty buffer")
-	}
-}
-
-func TestAcceptableResponseTs_FeedbackGet(t *testing.T) {
-	accept := acceptableResponseTs(FEEDBACK_GET)
-	if accept == nil {
-		t.Fatal("expected non-nil for FEEDBACK_GET")
-	}
-	if !accept[1051] {
-		t.Fatal("expected 1051 accepted")
-	}
-	if !accept[FEEDBACK_GET] {
-		t.Fatal("expected FEEDBACK_GET accepted")
-	}
-	if accept[999] {
-		t.Fatal("999 should not be accepted")
-	}
-}
-
-func TestAcceptableResponseTs_UnknownCommand_AcceptsAll(t *testing.T) {
-	if acceptableResponseTs(999) != nil {
-		t.Fatal("expected nil (accept-any) for unknown command")
-	}
-}
-
-func TestKeysOf(t *testing.T) {
-	m := map[int]bool{1: true, 2: true, 3: true}
-	keys := keysOf(m)
-	if len(keys) != 3 {
-		t.Fatalf("expected 3 keys, got %d", len(keys))
-	}
-	// Just check membership; order isn't guaranteed by keysOf.
-	seen := map[int]bool{}
-	for _, k := range keys {
-		seen[k] = true
-	}
-	for want := range m {
-		if !seen[want] {
-			t.Fatalf("expected key %d in result", want)
-		}
-	}
-}
-
-func TestKeysOf_Empty(t *testing.T) {
-	keys := keysOf(map[int]bool{})
-	if len(keys) != 0 {
-		t.Fatalf("expected empty slice, got %v", keys)
 	}
 }
 
@@ -572,20 +526,6 @@ func TestHTTPCommand_BadServer_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestHTTPCommand_UnexpectedResponseT_StillReturns(t *testing.T) {
-	// Controller logs a warning but returns the feedback even when T mismatches.
-	c, srv := newHTTPTestController(t, 99999, FeedbackData{B: 0.1})
-	defer srv.Close()
-	defer c.Close(context.Background())
-	fb, err := c.GetFeedback(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if fb.B != 0.1 {
-		t.Fatalf("expected feedback to return, got %+v", fb)
-	}
-}
-
 func TestNewRoArmController_SerialFailsOnBadPort(t *testing.T) {
 	_, err := NewRoArmController(&RoArmConfig{Port: "/definitely/not/a/real/device/12345"})
 	if err == nil {
@@ -623,7 +563,7 @@ func TestHTTPCommand_BadJSON_ReturnsError(t *testing.T) {
 	}
 }
 
-// fakeSerialPort implements serial.Port for testing sendSerialCommand.
+// fakeSerialPort implements serial.Port for testing the serial transport.
 type fakeSerialPort struct {
 	written  []byte
 	toRead   []byte
@@ -666,12 +606,13 @@ func (p *fakeSerialPort) Break(d time.Duration) error          { return nil }
 func newSerialTestController(t *testing.T, port *fakeSerialPort) *RoArmController {
 	t.Helper()
 	return &RoArmController{
-		serialPort:    port,
-		isHTTP:        false,
-		serialTimeout: 500 * time.Millisecond,
-		httpTimeout:   DefaultHTTPTimeout,
-		logger:        logging.NewTestLogger(t),
-		tracker:       newMotionTracker(),
+		serialPort:      port,
+		isHTTP:          false,
+		serialTimeout:   500 * time.Millisecond,
+		httpTimeout:     DefaultHTTPTimeout,
+		logger:          logging.NewTestLogger(t),
+		tracker:         newMotionTracker(),
+		canReadFeedback: true,
 	}
 }
 
@@ -820,5 +761,63 @@ func TestMotionTrackerNotMovingBeforeFirstRecord(t *testing.T) {
 	tr := newMotionTracker()
 	if tr.isMoving(time.Now()) {
 		t.Fatal("expected not moving before any recordMove call")
+	}
+}
+
+// A control command must return as soon as it is written, even when the
+// firmware never answers (echo off). Before Task 4 this timed out.
+func TestSerialWrite_ReturnsWithoutAResponse(t *testing.T) {
+	port := &fakeSerialPort{} // nothing will ever be readable
+	c := newSerialTestController(t, port)
+	start := time.Now()
+	if err := c.SetTorque(context.Background(), true); err != nil {
+		t.Fatalf("SetTorque: %v", err)
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatalf("SetTorque waited for a response: %v", time.Since(start))
+	}
+	if !bytes.Contains(port.written, []byte(`"T":210`)) {
+		t.Fatalf("command not written: %q", port.written)
+	}
+}
+
+// Feedback still waits for, and filters to, a T:1051 frame.
+func TestSerialQuery_DropsEchoAndReturnsFeedback(t *testing.T) {
+	port := &fakeSerialPort{
+		toRead: []byte("{\"T\":102,\"base\":0}\r\n{\"T\":1051,\"b\":0.25}\r\n"),
+	}
+	c := newSerialTestController(t, port)
+	fb, err := c.GetFeedback(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fb.B != 0.25 {
+		t.Fatalf("expected the 1051 frame, got %+v", fb)
+	}
+}
+
+// HTTP control commands ignore the body entirely.
+func TestHTTPWrite_IgnoresBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not json at all"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c, err := NewRoArmController(&RoArmConfig{Host: u.Host})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetLED(context.Background(), 10); err != nil {
+		t.Fatalf("write should not parse the body: %v", err)
+	}
+}
+
+// HTTP feedback must be a 1051 frame; anything else is an error naming HTTP.
+func TestHTTPQuery_RejectsNonFeedbackBody(t *testing.T) {
+	c, srv := newHTTPTestController(t, 99999, FeedbackData{B: 0.1})
+	defer srv.Close()
+	_, err := c.GetFeedback(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "HTTP") {
+		t.Fatalf("expected an HTTP-naming error, got %v", err)
 	}
 }
