@@ -544,7 +544,7 @@ func (c *RoArmController) SetLED(ctx context.Context, brightness int) error {
 func (c *RoArmController) MoveToHome(ctx context.Context) error {
 	// Home position: all joints at 0 except joint 3 at 90 degrees
 	homePositions := []float64{0, 0, math.Pi / 2, 0, 0, 0}
-	return c.SetJointRadians(ctx, homePositions, 100, 50)
+	return c.SetJointRadians(ctx, homePositions, speedToUnits(stopSpeedDegsPerSec), accelToUnits(defaultGripperAccDegsPerSecSq))
 }
 
 // SetJointRadian moves a single joint to the specified radian position

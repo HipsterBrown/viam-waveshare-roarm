@@ -141,8 +141,8 @@ type fakeArmRPC struct {
 	Joint6Rad      float64
 	LastCommand    string
 	LastSetRad     float64
-	LastSetSpeed   int
-	LastSetAcc     int
+	LastSetSpeed   float64
+	LastSetAcc     float64
 	StopCalls      int
 	MoveDeadline   time.Time
 	DoCommandError error
@@ -164,10 +164,10 @@ func (f *fakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) 
 		rad, _ := cmd[keyRad].(float64)
 		f.LastSetRad = rad
 		if v, ok := cmd[keySpeed].(float64); ok {
-			f.LastSetSpeed = int(v)
+			f.LastSetSpeed = v
 		}
 		if v, ok := cmd[keyAcc].(float64); ok {
-			f.LastSetAcc = int(v)
+			f.LastSetAcc = v
 		}
 		f.Joint6Rad = rad
 		return map[string]interface{}{"success": true}, nil

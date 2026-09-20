@@ -150,14 +150,8 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		return nil, fmt.Errorf("acceleration_degs_per_sec_per_sec must be between 10 and 500 degrees/second^2, got %.1f", accelerationDegsPerSec)
 	}
 
-	// Convert degrees/sec to internal speed units (approximate conversion based on RoArm SDK).
-	// Preserve the 30-unit (~3 deg/s) floor for safety margin beyond the helper's minSpeedUnits=1.
+	// Convert to firmware units; see conversions.go.
 	defaultSpeed := speedToUnits(float64(speedDegsPerSec))
-	if defaultSpeed < 30 {
-		defaultSpeed = 30
-	}
-
-	// Convert degrees/sec^2 to internal acceleration units.
 	defaultAcc := accelToUnits(float64(accelerationDegsPerSec))
 
 	// Create controller configuration
@@ -312,11 +306,8 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	if extra != nil {
 		if speedOverride, ok := extra["speed"]; ok {
 			if speedVal, ok := speedOverride.(float64); ok {
-				// Convert from degrees/sec to internal units; preserve 30-unit safety floor.
+				// Convert from degrees/sec to firmware units.
 				speed = speedToUnits(speedVal)
-				if speed < 30 {
-					speed = 30
-				}
 			}
 		}
 		if accOverride, ok := extra["acceleration"]; ok {
@@ -450,7 +441,7 @@ func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error 
 	if len(current) < 6 {
 		return fmt.Errorf("stop: short feedback from controller (got %d joints)", len(current))
 	}
-	const stopSpeed = 100 // internal units, ~10 deg/s — gentle soft stop
+	stopSpeed := speedToUnits(stopSpeedDegsPerSec) // gentle soft stop
 	return r.controller.SetJointRadians(ctx, current, stopSpeed, acc)
 }
 
@@ -531,9 +522,6 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		}
 		r.mu.Lock()
 		r.defaultSpeed = speedToUnits(speed)
-		if r.defaultSpeed < 30 {
-			r.defaultSpeed = 30
-		}
 		r.mu.Unlock()
 		return map[string]interface{}{"speed_set": speed}, nil
 
@@ -571,13 +559,13 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("%s requires %q number", cmdSetGripperRad, keyRad)
 		}
-		speed := defaultGripperSpeed
-		acc := defaultGripperAcc
+		speed := speedToUnits(defaultGripperSpeedDegsPerSec)
+		acc := accelToUnits(defaultGripperAccDegsPerSecSq)
 		if v, ok := cmd[keySpeed].(float64); ok {
-			speed = int(v)
+			speed = speedToUnits(v)
 		}
 		if v, ok := cmd[keyAcc].(float64); ok {
-			acc = int(v)
+			acc = accelToUnits(v)
 		}
 		ctrl := r.snapshotController()
 		if err := ctrl.SetJointRadian(ctx, 6, rad, speed, acc); err != nil {
@@ -596,7 +584,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if len(radians) < 6 {
 			return nil, fmt.Errorf("%s: short feedback (got %d joints)", cmdStopGripper, len(radians))
 		}
-		if err := ctrl.SetJointRadian(ctx, 6, radians[5], stopGripperSpeed, defaultGripperAcc); err != nil {
+		if err := ctrl.SetJointRadian(ctx, 6, radians[5], speedToUnits(stopSpeedDegsPerSec), accelToUnits(defaultGripperAccDegsPerSecSq)); err != nil {
 			return nil, err
 		}
 		return map[string]interface{}{"success": true}, nil
@@ -700,11 +688,8 @@ func (r *roarmM3) Reconfigure(ctx context.Context, deps resource.Dependencies, c
 		r.controller = ctrl
 	}
 
-	// Motion params always update. Preserve 30-unit safety floor on speed.
+	// Motion params always update.
 	defaultSpeed := speedToUnits(float64(speedDegsPerSec))
-	if defaultSpeed < 30 {
-		defaultSpeed = 30
-	}
 	defaultAcc := accelToUnits(float64(accelerationDegsPerSec))
 
 	r.defaultSpeed = defaultSpeed

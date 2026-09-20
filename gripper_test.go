@@ -235,10 +235,10 @@ func TestGripperDoCommand_Unknown(t *testing.T) {
 
 func TestGripperSetPosition_RangeCheck(t *testing.T) {
 	g := newTestGripper(t, &fakeArmRPC{})
-	if err := g.SetPosition(context.Background(), -20, 500, 50); err == nil {
+	if err := g.SetPosition(context.Background(), -20, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err == nil {
 		t.Fatal("expected error for -20 degrees")
 	}
-	if err := g.SetPosition(context.Background(), 200, 500, 50); err == nil {
+	if err := g.SetPosition(context.Background(), 200, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err == nil {
 		t.Fatal("expected error for 200 degrees")
 	}
 }
@@ -248,7 +248,7 @@ func TestGripperSetPosition_CancelledContext(t *testing.T) {
 	g := newTestGripper(t, fa)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = g.SetPosition(ctx, 50, 500, 50)
+	_ = g.SetPosition(ctx, 50, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq)
 	if fa.LastCommand != "set_gripper_rad" {
 		t.Fatalf("expected set_gripper_rad dispatched, got %q", fa.LastCommand)
 	}
@@ -267,8 +267,8 @@ func TestGripperDoCommand_SetPosition(t *testing.T) {
 	out, err := g.DoCommand(ctx, map[string]interface{}{
 		"command": "set_position",
 		"degrees": float64(50),
-		"speed":   float64(500),
-		"acc":     float64(50),
+		"speed":   float64(50),
+		"acc":     float64(100),
 	})
 	_ = out
 	_ = err
@@ -330,7 +330,7 @@ func TestGripperAfterClose_ReturnErrors(t *testing.T) {
 	if _, err := g.GetPosition(context.Background()); err == nil {
 		t.Fatal("expected error")
 	}
-	if err := g.SetPosition(context.Background(), 0, 500, 50); err == nil {
+	if err := g.SetPosition(context.Background(), 0, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err == nil {
 		t.Fatal("expected error")
 	}
 	if _, err := g.CurrentInputs(context.Background()); err == nil {
