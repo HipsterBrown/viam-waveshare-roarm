@@ -23,7 +23,9 @@ type fakeController struct {
 	FeedbackCalls int
 	Feedback      FeedbackData
 	FailOn        string // method name to return error from, empty = never
-	MoveDeadline  time.Time
+	Moving        bool   // what IsMoving reports
+	HoldStill     bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
+	SettleCalls   int
 }
 
 func (f *fakeController) err(method string) error {
@@ -81,6 +83,11 @@ func (f *fakeController) SetJointRadian(ctx context.Context, joint int, radian f
 	}
 	f.LastRadians = f.LastRadians[:6]
 	f.LastRadians[joint-1] = radian
+	if !f.HoldStill {
+		cur := f.currentLocked()
+		cur[joint-1] = radian
+		f.setFeedback(cur)
+	}
 	return nil
 }
 
@@ -92,6 +99,9 @@ func (f *fakeController) SetJointRadians(ctx context.Context, radians []float64,
 	defer f.mu.Unlock()
 	f.LastRadians = append([]float64(nil), radians...)
 	f.LastSpeed, f.LastAcc = speed, acc
+	if !f.HoldStill {
+		f.setFeedback(radians)
+	}
 	return nil
 }
 
@@ -101,7 +111,33 @@ func (f *fakeController) GetJointRadians(ctx context.Context) ([]float64, error)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return []float64{f.Feedback.B, f.Feedback.S, f.Feedback.E, f.Feedback.Wrist, f.Feedback.R, f.Feedback.G}, nil
+	return f.currentLocked(), nil
+}
+
+// currentLocked returns the six Feedback joints; the mutex must be held.
+func (f *fakeController) currentLocked() []float64 {
+	return []float64{f.Feedback.B, f.Feedback.S, f.Feedback.E, f.Feedback.Wrist, f.Feedback.R, f.Feedback.G}
+}
+
+// setFeedback writes radians into the Feedback frame joints (software frame).
+func (f *fakeController) setFeedback(radians []float64) {
+	fb := &f.Feedback
+	for i, v := range radians {
+		switch i {
+		case 0:
+			fb.B = v
+		case 1:
+			fb.S = v
+		case 2:
+			fb.E = v
+		case 3:
+			fb.Wrist = v
+		case 4:
+			fb.R = v
+		case 5:
+			fb.G = v
+		}
+	}
 }
 
 func (f *fakeController) GetFeedback(ctx context.Context) (*FeedbackData, error) {
@@ -115,18 +151,20 @@ func (f *fakeController) GetFeedback(ctx context.Context) (*FeedbackData, error)
 	return &fb, nil
 }
 
-func (f *fakeController) TestConnection(ctx context.Context) error { return f.err("TestConnection") }
+func (f *fakeController) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
+	if err := f.err("WaitUntilSettled"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.SettleCalls++
+	return f.currentLocked(), nil
+}
 
 func (f *fakeController) IsMoving(ctx context.Context) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return time.Now().Before(f.MoveDeadline), nil
-}
-
-func (f *fakeController) NoteMotionDeadline(deadline time.Time) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.MoveDeadline = deadline
+	return f.Moving, nil
 }
 
 func (f *fakeController) Close(ctx context.Context) error { return nil }

@@ -348,15 +348,9 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 		moveTimeSeconds = 10.0 // Maximum move time for safety
 	}
 
-	// Refine the motion tracker deadline with our better per-move estimate so
-	// IsMoving reflects reality more closely than the controller's worst-case
-	// fallback.
-	moveDuration := time.Duration(moveTimeSeconds * float64(time.Second))
-	r.controller.NoteMotionDeadline(time.Now().Add(moveDuration))
-
 	// Wait for movement to complete
 	select {
-	case <-time.After(moveDuration):
+	case <-time.After(time.Duration(moveTimeSeconds * float64(time.Second))):
 	case <-ctx.Done():
 		return ctx.Err()
 	}

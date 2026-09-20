@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -229,32 +230,6 @@ func TestValidateLEDBrightness_Range(t *testing.T) {
 	}
 	if err := ValidateLEDBrightness(256); err == nil {
 		t.Fatal("expected error for 256")
-	}
-}
-
-func TestEstimateMoveDeadline_Bounds(t *testing.T) {
-	now := time.Now()
-	// A very slow speed (lots of time per radian) should be clamped to 10s max.
-	d := estimateMoveDeadline(now, 1).Sub(now)
-	if d > 10*time.Second+1*time.Millisecond {
-		t.Fatalf("expected clamp <= 10s, got %v", d)
-	}
-	if d < 100*time.Millisecond {
-		t.Fatalf("expected >= 100ms, got %v", d)
-	}
-	// Very fast speed should be clamped to 100ms floor.
-	d2 := estimateMoveDeadline(now, 4096).Sub(now)
-	if d2 < 100*time.Millisecond {
-		t.Fatalf("expected 100ms floor, got %v", d2)
-	}
-}
-
-func TestEstimateMoveDeadline_DefendsAgainstZeroSpeed(t *testing.T) {
-	// Even with a speed that maps to zero deg/s, we should return a sane deadline.
-	now := time.Now()
-	d := estimateMoveDeadline(now, 0).Sub(now)
-	if d <= 0 {
-		t.Fatalf("expected positive duration, got %v", d)
 	}
 }
 
@@ -567,6 +542,7 @@ func TestHTTPCommand_BadJSON_ReturnsError(t *testing.T) {
 type fakeSerialPort struct {
 	written  []byte
 	toRead   []byte
+	frames   [][]byte // popped one per ResetInputBuffer (i.e. per query)
 	readErr  error
 	readPos  int
 	closed   bool
@@ -591,8 +567,14 @@ func (p *fakeSerialPort) Write(b []byte) (int, error) {
 	p.written = append(p.written, b...)
 	return len(b), nil
 }
-func (p *fakeSerialPort) Drain() error             { return nil }
-func (p *fakeSerialPort) ResetInputBuffer() error  { p.resetIn++; return nil }
+func (p *fakeSerialPort) Drain() error { return nil }
+func (p *fakeSerialPort) ResetInputBuffer() error {
+	p.resetIn++
+	if len(p.frames) > 0 {
+		p.toRead, p.frames, p.readPos = p.frames[0], p.frames[1:], 0
+	}
+	return nil
+}
 func (p *fakeSerialPort) ResetOutputBuffer() error { p.resetOut++; return nil }
 func (p *fakeSerialPort) SetDTR(v bool) error      { return nil }
 func (p *fakeSerialPort) SetRTS(v bool) error      { return nil }
@@ -611,7 +593,6 @@ func newSerialTestController(t *testing.T, port *fakeSerialPort) *RoArmControlle
 		serialTimeout:   500 * time.Millisecond,
 		httpTimeout:     DefaultHTTPTimeout,
 		logger:          logging.NewTestLogger(t),
-		tracker:         newMotionTracker(),
 		canReadFeedback: true,
 	}
 }
@@ -706,26 +687,6 @@ func TestRoArmControllerClose_HTTPMode(t *testing.T) {
 	}
 }
 
-func TestRoArmControllerIsMoving_Default(t *testing.T) {
-	c, err := NewRoArmController(&RoArmConfig{Host: "1.2.3.4"})
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	moving, err := c.IsMoving(nil)
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if moving {
-		t.Fatal("expected not moving before any recordMove")
-	}
-	c.NoteMotionDeadline(time.Now().Add(200 * time.Millisecond))
-	moving, _ = c.IsMoving(nil)
-	if !moving {
-		t.Fatal("expected moving after NoteMotionDeadline")
-	}
-	_ = c.Close(nil)
-}
-
 func TestCommandMarshalJSON_NilData(t *testing.T) {
 	cmd := &Command{T: FEEDBACK_GET}
 	data, err := cmd.MarshalJSON()
@@ -738,29 +699,6 @@ func TestCommandMarshalJSON_NilData(t *testing.T) {
 	}
 	if len(out) != 1 {
 		t.Fatalf("expected 1 key, got %v", out)
-	}
-}
-
-func TestMotionTrackerIsMovingBeforeDeadline(t *testing.T) {
-	tr := newMotionTracker()
-	tr.recordMove(time.Now().Add(200 * time.Millisecond))
-	if !tr.isMoving(time.Now()) {
-		t.Fatal("expected moving before deadline")
-	}
-}
-
-func TestMotionTrackerNotMovingAfterDeadline(t *testing.T) {
-	tr := newMotionTracker()
-	tr.recordMove(time.Now().Add(-10 * time.Millisecond))
-	if tr.isMoving(time.Now()) {
-		t.Fatal("expected not moving after deadline")
-	}
-}
-
-func TestMotionTrackerNotMovingBeforeFirstRecord(t *testing.T) {
-	tr := newMotionTracker()
-	if tr.isMoving(time.Now()) {
-		t.Fatal("expected not moving before any recordMove call")
 	}
 }
 
@@ -819,5 +757,46 @@ func TestHTTPQuery_RejectsNonFeedbackBody(t *testing.T) {
 	_, err := c.GetFeedback(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "HTTP") {
 		t.Fatalf("expected an HTTP-naming error, got %v", err)
+	}
+}
+
+func TestControllerIsMoving_ComparesTwoFeedbackFrames(t *testing.T) {
+	moving := &fakeSerialPort{frames: [][]byte{
+		[]byte("{\"T\":1051,\"b\":0.10}\r\n"),
+		[]byte("{\"T\":1051,\"b\":0.30}\r\n"),
+	}}
+	c := newSerialTestController(t, moving)
+	got, err := c.IsMoving(context.Background())
+	if err != nil || !got {
+		t.Fatalf("expected moving, got %v err=%v", got, err)
+	}
+	still := &fakeSerialPort{frames: [][]byte{
+		[]byte("{\"T\":1051,\"b\":0.10}\r\n"),
+		[]byte("{\"T\":1051,\"b\":0.101}\r\n"),
+	}}
+	c = newSerialTestController(t, still)
+	got, err = c.IsMoving(context.Background())
+	if err != nil || got {
+		t.Fatalf("expected still, got %v err=%v", got, err)
+	}
+}
+
+func TestControllerNoFeedback_Fallbacks(t *testing.T) {
+	c := newSerialTestController(t, &fakeSerialPort{})
+	c.canReadFeedback = false
+	if _, err := c.GetJointRadians(context.Background()); !errors.Is(err, errNoFeedback) {
+		t.Fatalf("expected errNoFeedback, got %v", err)
+	}
+	moving, err := c.IsMoving(context.Background())
+	if err != nil || moving {
+		t.Fatalf("expected false, nil; got %v %v", moving, err)
+	}
+	start := time.Now()
+	pos, err := c.WaitUntilSettled(context.Background(), []float64{0, 0, 0, 0, 0, 0}, armMask, 200*time.Millisecond)
+	if err != nil || pos != nil {
+		t.Fatalf("expected nil, nil; got %v %v", pos, err)
+	}
+	if time.Since(start) < 90*time.Millisecond {
+		t.Fatal("expected the plain time estimate to be slept")
 	}
 }

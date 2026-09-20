@@ -111,7 +111,6 @@ type RoArmController struct {
 	isHTTP        bool
 	httpTimeout   time.Duration
 	serialTimeout time.Duration
-	tracker       *motionTracker
 	verboseWire   bool
 	// canReadFeedback is true when this transport can answer a T:105
 	// feedback request. Serial always can; HTTP depends on the firmware.
@@ -139,7 +138,6 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 		httpTimeout:   DefaultHTTPTimeout,
 		serialTimeout: DefaultSerialTimeout,
 		logger:        config.Logger,
-		tracker:       newMotionTracker(),
 		verboseWire:   os.Getenv("ROARM_WIRE_TRACE") == "1",
 	}
 
@@ -278,28 +276,6 @@ const httpSupportsFeedback = true
 // cannot return feedback. Its message contains noFeedbackMarker so the
 // gripper can recognise it after it has crossed the DoCommand boundary.
 var errNoFeedback = errors.New(noFeedbackMarker + "; position reads need a serial connection")
-
-// motionTracker records when the controller expects an in-flight motion
-// to complete. IsMoving reads this deadline to tell callers whether the
-// arm is still moving without requiring a round-trip to hardware.
-type motionTracker struct {
-	mu       sync.Mutex
-	deadline time.Time
-}
-
-func newMotionTracker() *motionTracker { return &motionTracker{} }
-
-func (m *motionTracker) recordMove(deadline time.Time) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.deadline = deadline
-}
-
-func (m *motionTracker) isMoving(now time.Time) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return now.Before(m.deadline)
-}
 
 // write sends a control command and returns once it is on the wire. The
 // firmware never answers these (only FEEDBACK_GET gets a reply), so waiting
@@ -472,37 +448,38 @@ func (c *RoArmController) serialReadFeedback(ctx context.Context) (*FeedbackData
 	}
 }
 
-// IsMoving returns true if the controller believes a motion is still in flight
-// (i.e. the estimated completion deadline hasn't passed).
+// WaitUntilSettled blocks until the masked joints reach target or stop
+// moving. See settle.go. On a transport that cannot read feedback it sleeps
+// the plain time estimate (half the timeout) and returns nil positions.
+func (c *RoArmController) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
+	if !c.canReadFeedback {
+		return nil, sleepCtx(ctx, timeout/2)
+	}
+	pos, stalled, err := waitUntilSettled(ctx, c.GetJointRadians, sleepCtx, target, mask, timeout)
+	if stalled {
+		c.logger.Debugf("settle: joints stopped short of target (at %v, wanted %v)", pos, target)
+	}
+	return pos, err
+}
+
+// IsMoving compares two position samples isMovingProbeGap apart. On a
+// transport that cannot read feedback it reports false.
 func (c *RoArmController) IsMoving(ctx context.Context) (bool, error) {
-	return c.tracker.isMoving(time.Now()), nil
-}
-
-// NoteMotionDeadline records that a motion is expected to complete no later
-// than the given time. Called by higher-level resources that have better
-// information about motion duration than the controller.
-func (c *RoArmController) NoteMotionDeadline(deadline time.Time) {
-	c.tracker.recordMove(deadline)
-}
-
-// estimateMoveDeadline returns a conservative upper-bound deadline for a move
-// at the given firmware speed, used when the caller does not supply a better
-// estimate via NoteMotionDeadline.
-func estimateMoveDeadline(now time.Time, speed int) time.Time {
-	speedDegPerSec := speedFromUnits(speed)
-	radPerSec := speedDegPerSec * math.Pi / 180.0
-	if radPerSec <= 0 {
-		radPerSec = 1 // defensive
+	if !c.canReadFeedback {
+		return false, nil
 	}
-	const worstCaseRad = 2 * math.Pi
-	estimated := time.Duration(worstCaseRad/radPerSec) * time.Second
-	if estimated < 100*time.Millisecond {
-		estimated = 100 * time.Millisecond
+	a, err := c.GetJointRadians(ctx)
+	if err != nil {
+		return false, err
 	}
-	if estimated > 10*time.Second {
-		estimated = 10 * time.Second
+	if err := sleepCtx(ctx, isMovingProbeGap); err != nil {
+		return false, err
 	}
-	return now.Add(estimated)
+	b, err := c.GetJointRadians(ctx)
+	if err != nil {
+		return false, err
+	}
+	return maxTravel(a, b, nil) > stallRad, nil
 }
 
 // SetTorque enables or disables torque for all joints
@@ -583,9 +560,6 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 		return err
 	}
 
-	// Record a conservative fallback deadline. Callers with better
-	// information should call NoteMotionDeadline to refine it.
-	c.tracker.recordMove(estimateMoveDeadline(time.Now(), speed))
 	return nil
 }
 
@@ -630,9 +604,6 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 		return err
 	}
 
-	// Record a conservative fallback deadline. Callers with better
-	// information should call NoteMotionDeadline to refine it.
-	c.tracker.recordMove(estimateMoveDeadline(time.Now(), speed))
 	return nil
 }
 

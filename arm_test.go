@@ -335,7 +335,7 @@ func TestArmKinematics(t *testing.T) {
 }
 
 func TestArmIsMoving(t *testing.T) {
-	fc := &fakeController{MoveDeadline: time.Now().Add(200 * time.Millisecond)}
+	fc := &fakeController{Moving: true}
 	r := newTestArm(t, fc)
 	moving, err := r.IsMoving(context.Background())
 	if err != nil {
