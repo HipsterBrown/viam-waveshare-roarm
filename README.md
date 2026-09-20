@@ -289,11 +289,15 @@ The arm connects to your existing WiFi network. You'll need to configure this th
 
 ### Hardware notes
 
-Measured on the bench (Task 14):
+Measured on a RoArm-M3 over USB serial at 115200 baud:
 
 - Measured deg/s per commanded speed: TBD (B1).
 - Settle latency: TBD (B2).
-- Streamed timing accuracy: TBD (B6).
+- Streamed trajectories (50 points at 10 Hz, ±0.3 rad sine on joint 1, `cmd/streambench`):
+  - live producer, one point per batch at its own time: wall 5.30 s for a 4.9 s trajectory (34 ms start gate, 460 ms final settle), 0 late points. The arm follows one segment (100 ms) behind a live producer, which is inherent: a goal can only be written once it is known.
+  - whole trajectory in one batch: wall 4.90 s, 103 ms final settle, 0 late points. Each point is written when its predecessor is due, so the arm arrives on schedule.
+  - `Stop` 2.5 s into the stream: the call returned `context canceled` at 2.50 s after 25 acknowledged batches and the arm held.
+  - no frame-corruption warnings at 10 writes per second.
 
 ### Data Robustness
 
