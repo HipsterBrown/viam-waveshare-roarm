@@ -52,15 +52,9 @@ const (
 	DefaultSerialTimeout = 1 * time.Second
 )
 
-// Joint limits for RoArm-M3 (in radians) - from waveshare_roarm_sdk utils.py
-var RoArmM3JointLimits = [][2]float64{
-	{-3.3, 3.3}, // Joint 1: ±189° (wider than ±180°)
-	{-1.9, 1.9}, // Joint 2: ±109° (wider than ±90°)
-	{-1.2, 3.3}, // Joint 3: -69° to 189°
-	{-1.9, 1.9}, // Joint 4: ±109° (wider than ±90°)
-	{-3.3, 3.3}, // Joint 5: ±189° (wider than ±180°)
-	{-0.2, 1.9}, // Joint 6: -11° to 109° (gripper)
-}
+// gripperJointLimits is joint 6's software-frame range in radians (about
+// -11.5 to 109 degrees). Joints 1-5 take their limits from roarm_m3.json.
+var gripperJointLimits = [2]float64{-0.2, 1.9}
 
 // Command represents a JSON command to send to the RoArm
 type Command struct {
@@ -534,13 +528,6 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 		return err
 	}
 
-	// Validate joint limits
-	limits := RoArmM3JointLimits[joint-1]
-	if radian < limits[0] || radian > limits[1] {
-		return fmt.Errorf("joint %d radian %.3f out of range [%.3f, %.3f]",
-			joint, radian, limits[0], limits[1])
-	}
-
 	wireRadian := radian
 	if joint == 6 {
 		wireRadian = gripperSoftwareToWire(radian)
@@ -575,15 +562,6 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 	}
 	if err := ValidateAcceleration(acc); err != nil {
 		return err
-	}
-
-	// Validate all joint limits
-	for i, radian := range radians {
-		limits := RoArmM3JointLimits[i]
-		if radian < limits[0] || radian > limits[1] {
-			return fmt.Errorf("joint %d radian %.3f out of range [%.3f, %.3f]",
-				i+1, radian, limits[0], limits[1])
-		}
 	}
 
 	cmd := &Command{

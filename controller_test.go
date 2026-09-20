@@ -431,10 +431,6 @@ func TestHTTPSetJointRadian(t *testing.T) {
 	if err := c.SetJointRadian(context.Background(), 1, 0.5, 500, -1); err == nil {
 		t.Fatal("expected error for bad accel")
 	}
-	// radian out of range for joint 1
-	if err := c.SetJointRadian(context.Background(), 1, 100.0, 500, 50); err == nil {
-		t.Fatal("expected error for out-of-range radian")
-	}
 }
 
 func TestHTTPSetJointRadians(t *testing.T) {
@@ -448,10 +444,6 @@ func TestHTTPSetJointRadians(t *testing.T) {
 	// Wrong length
 	if err := c.SetJointRadians(context.Background(), []float64{0}, 500, 50); err == nil {
 		t.Fatal("expected error for wrong length")
-	}
-	// Out-of-range radian
-	if err := c.SetJointRadians(context.Background(), []float64{100, 0, 0, 0, 0, 0}, 500, 50); err == nil {
-		t.Fatal("expected error for out-of-range radian")
 	}
 	// Bad speed
 	if err := c.SetJointRadians(context.Background(), []float64{0, 0, 0, 0, 0, 0}, -1, 50); err == nil {

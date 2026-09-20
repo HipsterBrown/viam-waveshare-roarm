@@ -32,6 +32,12 @@ var (
 //go:embed roarm_m3.json
 var roarmModelJson []byte
 
+// toolOffsetMM is the distance from the wrist-roll axis to the gripper mount
+// along the roll axis, from Waveshare's RoArm-M3 URDF (link5_to_gripper_link
+// origin z = 0.052035 m). The "tool" link in roarm_m3.json carries this value;
+// bench task B5 confirms it against the physical arm.
+const toolOffsetMM = 52.0
+
 func init() {
 	resource.RegisterComponent(arm.API, RoArmM3,
 		resource.Registration[arm.Arm, *RoArmM3Config]{
@@ -149,6 +155,18 @@ func makeRoArmModelFrame() (referenceframe.Model, error) {
 	return m.ParseConfig("roarm_m3")
 }
 
+// jointLimitsFromModel reads the five arm joint limits (radians) from the
+// kinematic model, which is the single source of truth: the rdk arm client
+// validates remote calls against these same limits before they reach us.
+func jointLimitsFromModel(m referenceframe.Model) [][2]float64 {
+	dof := m.DoF()
+	limits := make([][2]float64, len(dof))
+	for i, l := range dof {
+		limits[i] = [2]float64{l.Min, l.Max}
+	}
+	return limits
+}
+
 func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (arm.Arm, error) {
 	conf, err := resource.NativeConfig[*RoArmM3Config](rawConf)
 	if err != nil {
@@ -192,7 +210,7 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		logger:       logger,
 		controller:   controller,
 		model:        model,
-		jointLimits:  RoArmM3JointLimits[:5], // Only first 5 joints
+		jointLimits:  jointLimitsFromModel(model),
 		defaultSpeed: defaultSpeed,
 		defaultAcc:   defaultAcc,
 		cancelCtx:    cancelCtx,

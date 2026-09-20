@@ -2,6 +2,7 @@ package waveshareroarm
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -28,18 +29,19 @@ func TestMoveClampsToJointLimits(t *testing.T) {
 		controller:   fc,
 		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
 		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
-		jointLimits:  RoArmM3JointLimits[:5],
+		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
 		model:        mustLoadModel(t),
 	}
-	// ask for joint 1 at 10 rad (way over the +3.3 limit)
-	positions := []referenceframe.Input{10.0, 0, 0, 0, 0} // joint 1 should clamp to 3.3
+	// ask for joint 1 at 10 rad (way over the model's +180 degree limit).
+	// The JSON says 180.0004 degrees, so compare to pi with a tolerance.
+	positions := []referenceframe.Input{10.0, 0, 0, 0, 0}
 	if err := r.MoveToJointPositions(context.Background(), positions, nil); err != nil {
 		t.Fatal(err)
 	}
-	if fc.LastRadians[0] != 3.3 {
-		t.Fatalf("expected clamp to 3.3, got %v", fc.LastRadians[0])
+	if math.Abs(fc.LastRadians[0]-math.Pi) > 1e-4 {
+		t.Fatalf("expected clamp to %v, got %v", math.Pi, fc.LastRadians[0])
 	}
 }
 
@@ -50,18 +52,18 @@ func TestMoveClampsBelowMinimum(t *testing.T) {
 		controller:   fc,
 		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
 		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
-		jointLimits:  RoArmM3JointLimits[:5],
+		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
 		model:        mustLoadModel(t),
 	}
-	// Joint 1 min is -3.3
-	positions := []referenceframe.Input{-10.0, 0, 0, 0, 0} // should clamp to -3.3
+	// Joint 1 min is -180 degrees in the model.
+	positions := []referenceframe.Input{-10.0, 0, 0, 0, 0}
 	if err := r.MoveToJointPositions(context.Background(), positions, nil); err != nil {
 		t.Fatal(err)
 	}
-	if fc.LastRadians[0] != -3.3 {
-		t.Fatalf("expected clamp to -3.3, got %v", fc.LastRadians[0])
+	if math.Abs(fc.LastRadians[0]+math.Pi) > 1e-4 {
+		t.Fatalf("expected clamp to %v, got %v", -math.Pi, fc.LastRadians[0])
 	}
 }
 
@@ -71,7 +73,7 @@ func TestMoveRejectsWrongLengthInput(t *testing.T) {
 		controller:   fc,
 		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
 		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
-		jointLimits:  RoArmM3JointLimits[:5],
+		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
 		model:        mustLoadModel(t),
@@ -91,7 +93,7 @@ func TestEndPositionDoesNotDeadlock(t *testing.T) {
 		controller:   fc,
 		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
 		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
-		jointLimits:  RoArmM3JointLimits[:5],
+		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
 		model:        mustLoadModel(t),
@@ -109,7 +111,7 @@ func newTestArm(t *testing.T, fc *fakeController) *roarmM3 {
 		controller:   fc,
 		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
 		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
-		jointLimits:  RoArmM3JointLimits[:5],
+		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
 		model:        mustLoadModel(t),
@@ -497,7 +499,7 @@ func TestArmStopHoldsCurrentPosition(t *testing.T) {
 	}
 	r := &roarmM3{
 		controller: fc, defaultSpeed: speedToUnits(defaultSpeedDegsPerSec), defaultAcc: accelToUnits(defaultAccelDegsPerSecSq),
-		jointLimits: RoArmM3JointLimits[:5],
+		jointLimits: jointLimitsFromModel(mustLoadModel(t)),
 		logger:      logging.NewTestLogger(t),
 		opMgr:       operation.NewSingleOperationManager(),
 	}
@@ -524,7 +526,7 @@ func TestMovePreservesGripperPosition(t *testing.T) {
 		controller:   fc,
 		defaultSpeed: speedToUnits(defaultSpeedDegsPerSec),
 		defaultAcc:   accelToUnits(defaultAccelDegsPerSecSq),
-		jointLimits:  RoArmM3JointLimits[:5],
+		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
 		model:        mustLoadModel(t),

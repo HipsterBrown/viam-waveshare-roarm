@@ -262,6 +262,23 @@
           "y": 0,
           "z": 70
         }
+      },
+      {
+        "id": "tool",
+        "parent": "link4_to_gripper",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 52.0
+        },
+        "orientation": {
+          "type": "euler_angles",
+          "value": {
+            "pitch": 0,
+            "roll": 0,
+            "yaw": 0
+          }
+        }
       }
     ]
   }

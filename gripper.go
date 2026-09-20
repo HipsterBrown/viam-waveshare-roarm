@@ -23,14 +23,13 @@ var (
 	RoArmM3Gripper = resource.NewModel("hipsterbrown", "waveshare-roarm", "gripper")
 )
 
-const (
-	// gripperOpenRad / gripperGrabRad match the joint-6 limits from
-	// controller.RoArmM3JointLimits. Using the actual limit extremes
-	// avoids the off-by-range problem that existed when these were
-	// hardcoded degree values (100, -10) combined with the pi-minus-radian
-	// transform.
-	gripperOpenRad = 1.9  // upper limit of joint 6 (fully open)
-	gripperGrabRad = -0.2 // lower limit of joint 6 (fully closed)
+var (
+	// gripperOpenRad / gripperGrabRad are the joint-6 limits from
+	// gripperJointLimits. Using the actual limit extremes avoids the
+	// off-by-range problem that existed when these were hardcoded degree
+	// values (100, -10) combined with the pi-minus-radian transform.
+	gripperOpenRad = gripperJointLimits[1] // upper limit of joint 6 (fully open)
+	gripperGrabRad = gripperJointLimits[0] // lower limit of joint 6 (fully closed)
 )
 
 // armRPC is the narrow slice of the arm.Arm gRPC client the gripper consumes.
