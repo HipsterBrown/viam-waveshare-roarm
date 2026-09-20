@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -666,5 +667,57 @@ func TestDoCommand_GetFeedbackReportsGripperInSoftwareFrame(t *testing.T) {
 	joints := out["joints"].(map[string]interface{})
 	if got := joints["gripper"].(float64); math.Abs(got-gripperSoftwareToWire(3.0)) > 1e-9 {
 		t.Fatalf("gripper reported %v, want software frame %v", got, gripperSoftwareToWire(3.0))
+	}
+}
+
+func TestBridgeSetGripperRad_WaitsOnJoint6(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	_, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command": cmdSetGripperRad, keyRad: 1.0, keySpeed: 60.0, keyAcc: 200.0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.LastJoint != 6 || fc.LastRadians[5] != 1.0 {
+		t.Fatalf("joint %d rad %v", fc.LastJoint, fc.LastRadians)
+	}
+	if fc.LastSpeed != speedToUnits(60) || fc.LastAcc != accelToUnits(200) {
+		t.Fatalf("bridge must convert deg/s and deg/s^2: got %d/%d", fc.LastSpeed, fc.LastAcc)
+	}
+	if fc.SettleCalls != 1 {
+		t.Fatalf("expected one settle wait, got %d", fc.SettleCalls)
+	}
+}
+
+func TestBridgeSetGripperRad_NoWait(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	_, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command": cmdSetGripperRad, keyRad: 1.0, keyWait: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.SettleCalls != 0 {
+		t.Fatal("wait=false must not settle")
+	}
+}
+
+func TestBridgeSetGripperRad_RejectsOutOfRange(t *testing.T) {
+	r := newTestArm(t, &fakeController{})
+	for _, rad := range []float64{-0.5, 2.5} {
+		if _, err := r.DoCommand(context.Background(), map[string]interface{}{"command": cmdSetGripperRad, keyRad: rad}); err == nil {
+			t.Fatalf("rad %v should be rejected", rad)
+		}
+	}
+}
+
+func TestBridgeGetGripperRad_NoFeedbackCarriesMarker(t *testing.T) {
+	fc := &fakeController{FailOn: "GetJointRadians", FailWith: errNoFeedback}
+	r := newTestArm(t, fc)
+	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": cmdGetGripperRad})
+	if err == nil || !strings.Contains(err.Error(), noFeedbackMarker) {
+		t.Fatalf("expected the no-feedback marker to cross the bridge, got %v", err)
 	}
 }

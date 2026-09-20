@@ -551,6 +551,9 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("%s requires %q number", cmdSetGripperRad, keyRad)
 		}
+		if rad < gripperJointLimits[0] || rad > gripperJointLimits[1] {
+			return nil, fmt.Errorf("%s: %.3f rad is outside the gripper range [%.2f, %.2f]", cmdSetGripperRad, rad, gripperJointLimits[0], gripperJointLimits[1])
+		}
 		speed := speedToUnits(defaultGripperSpeedDegsPerSec)
 		acc := accelToUnits(defaultGripperAccDegsPerSecSq)
 		if v, ok := cmd[keySpeed].(float64); ok {
@@ -559,9 +562,21 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if v, ok := cmd[keyAcc].(float64); ok {
 			acc = accelToUnits(v)
 		}
+		wait := true
+		if w, ok := cmd[keyWait].(bool); ok {
+			wait = w
+		}
 		ctrl := r.snapshotController()
 		if err := ctrl.SetJointRadian(ctx, 6, rad, speed, acc); err != nil {
 			return nil, err
+		}
+		if wait {
+			target := make([]float64, 6)
+			target[5] = rad
+			fullTravel := gripperJointLimits[1] - gripperJointLimits[0]
+			if _, err := ctrl.WaitUntilSettled(ctx, target, gripperMask, settleTimeoutFor(fullTravel, speed)); err != nil {
+				return nil, fmt.Errorf("%s: gripper did not settle: %w", cmdSetGripperRad, err)
+			}
 		}
 		return map[string]interface{}{"success": true}, nil
 

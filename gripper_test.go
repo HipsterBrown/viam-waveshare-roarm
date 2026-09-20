@@ -21,6 +21,7 @@ func newTestGripper(t *testing.T, fa *fakeArmRPC) *roarmM3Gripper {
 		logger:    logging.NewTestLogger(t),
 		model:     mustBuildGripperModel(t),
 		opMgr:     operation.NewSingleOperationManager(),
+		sleep:     func(context.Context, time.Duration) error { return nil },
 	}
 }
 
@@ -33,95 +34,9 @@ func mustBuildGripperModel(t *testing.T) referenceframe.Model {
 	return m
 }
 
-func TestGripperOpenSendsJointLimit(t *testing.T) {
-	fa := &fakeArmRPC{}
-	g := newTestGripper(t, fa)
-	// Cancel immediately so the ctx-aware select in Open aborts after the DoCommand.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_ = g.Open(ctx, nil)
-	if fa.LastCommand != "set_gripper_rad" {
-		t.Fatalf("expected set_gripper_rad, got %q", fa.LastCommand)
-	}
-	if fa.LastSetRad != gripperOpenRad {
-		t.Fatalf("expected gripperOpenRad=%v, got %v", gripperOpenRad, fa.LastSetRad)
-	}
-}
-
-func TestGripperGrabWithBlockedReturnsTrue(t *testing.T) {
-	// After Grab writes -0.2, the gripper reads back; return a value that
-	// indicates the jaw didn't fully close (blocked by an object).
-	fa := &fakeArmRPC{Joint6Rad: 0.3}
-	g := newTestGripper(t, fa)
-	// Prevent the Grab from overwriting Joint6Rad back to -0.2.
-	// The test models: commanded -0.2, but object blocks → current ≈ 0.3.
-	// We need the fake to keep returning 0.3 even after set_gripper_rad.
-	// Hack: replace the DoCommand to not update Joint6Rad for set. We'll
-	// instead call Grab, then explicitly reset Joint6Rad before the read.
-	// Simpler: override after the set-call via a small sleep isn't viable
-	// in a unit test, so use the hook below.
-	fa.Joint6Rad = 0.3
-	// Bypass the set side-effect by snapshotting and restoring.
-	g.armClient = &blockedArmRPC{fake: fa}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	grabbed, err := g.Grab(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !grabbed {
-		t.Fatal("expected grabbed=true for blocked gripper")
-	}
-	st, _ := g.IsHoldingSomething(ctx, nil)
-	if !st.IsHoldingSomething {
-		t.Fatal("expected holding=true")
-	}
-}
-
-// blockedArmRPC wraps fakeArmRPC but ignores set_gripper_rad side effects,
-// simulating a gripper whose jaw is blocked and cannot reach the commanded
-// position. get_gripper_rad still returns the configured Joint6Rad.
-type blockedArmRPC struct {
-	fake *fakeArmRPC
-}
-
-func (b *blockedArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
-	name, _ := cmd["command"].(string)
-	if name == "set_gripper_rad" {
-		// Record the command but don't overwrite Joint6Rad.
-		b.fake.mu.Lock()
-		b.fake.LastCommand = name
-		rad, _ := cmd["rad"].(float64)
-		b.fake.LastSetRad = rad
-		b.fake.mu.Unlock()
-		return map[string]interface{}{"success": true}, nil
-	}
-	return b.fake.DoCommand(ctx, cmd)
-}
-
-func (b *blockedArmRPC) IsMoving(ctx context.Context) (bool, error) {
-	return b.fake.IsMoving(ctx)
-}
-
-func TestGripperGrabFullyClosedReturnsFalse(t *testing.T) {
-	// Jaw reaches commanded grabRad exactly → no object in the way.
-	fa := &fakeArmRPC{Joint6Rad: gripperGrabRad}
-	g := newTestGripper(t, fa)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	grabbed, err := g.Grab(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if grabbed {
-		t.Fatal("expected grabbed=false when fully closed")
-	}
-}
-
 func TestGripperOpenClearsHolding(t *testing.T) {
-	fa := &fakeArmRPC{Joint6Rad: 0.3}
+	fa := &fakeArmRPC{Joint6Rad: 0.3, HoldStill: true}
 	g := newTestGripper(t, fa)
-	g.armClient = &blockedArmRPC{fake: fa}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, _ = g.Grab(ctx, nil)
@@ -158,18 +73,6 @@ func TestGripperStop(t *testing.T) {
 	}
 	if fa.LastCommand != "stop_gripper" {
 		t.Fatalf("expected last command stop_gripper, got %q", fa.LastCommand)
-	}
-}
-
-func TestGripperIsMoving(t *testing.T) {
-	fa := &fakeArmRPC{MoveDeadline: time.Now().Add(500 * time.Millisecond)}
-	g := newTestGripper(t, fa)
-	moving, err := g.IsMoving(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !moving {
-		t.Fatal("expected moving")
 	}
 }
 
@@ -243,16 +146,6 @@ func TestGripperDoCommand_Unknown(t *testing.T) {
 	_, err := g.DoCommand(context.Background(), map[string]interface{}{"command": "nonsense"})
 	if err == nil {
 		t.Fatal("expected error for unknown command")
-	}
-}
-
-func TestGripperSetPosition_RangeCheck(t *testing.T) {
-	g := newTestGripper(t, &fakeArmRPC{})
-	if err := g.SetPosition(context.Background(), -20, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err == nil {
-		t.Fatal("expected error for -20 degrees")
-	}
-	if err := g.SetPosition(context.Background(), 200, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err == nil {
-		t.Fatal("expected error for 200 degrees")
 	}
 }
 
@@ -348,5 +241,98 @@ func TestGripperAfterClose_ReturnErrors(t *testing.T) {
 	}
 	if _, err := g.IsHoldingSomething(context.Background(), nil); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestGripperOpenSendsJointLimitAndWaits(t *testing.T) {
+	fa := &fakeArmRPC{}
+	g := newTestGripper(t, fa)
+	if err := g.Open(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastSetRad != gripperOpenRad || fa.LastWait != true {
+		t.Fatalf("rad %v wait %v", fa.LastSetRad, fa.LastWait)
+	}
+	if fa.LastSetSpeed != defaultGripperSpeedDegsPerSec || fa.LastSetAcc != defaultGripperAccDegsPerSecSq {
+		t.Fatalf("speed %v acc %v: want physical-unit defaults", fa.LastSetSpeed, fa.LastSetAcc)
+	}
+}
+
+func TestGripperGrabOnObjectReturnsTrue(t *testing.T) {
+	// The jaw stops at 0.3 rad instead of the closed limit: something is in it.
+	fa := &fakeArmRPC{Joint6Rad: 0.3, HoldStill: true}
+	g := newTestGripper(t, fa)
+	grabbed, err := g.Grab(context.Background(), nil)
+	if err != nil || !grabbed {
+		t.Fatalf("grabbed=%v err=%v", grabbed, err)
+	}
+	hs, _ := g.IsHoldingSomething(context.Background(), nil)
+	if !hs.IsHoldingSomething {
+		t.Fatal("holding state not recorded")
+	}
+}
+
+func TestGripperGrabEmptyReturnsFalse(t *testing.T) {
+	fa := &fakeArmRPC{Joint6Rad: 1.0} // free to close all the way
+	g := newTestGripper(t, fa)
+	grabbed, err := g.Grab(context.Background(), nil)
+	if err != nil || grabbed {
+		t.Fatalf("grabbed=%v err=%v", grabbed, err)
+	}
+}
+
+func TestGripperGrabReturnsPromptly(t *testing.T) {
+	// No fixed sleeps remain: with an instant fake, Grab is sub-100ms.
+	g := newTestGripper(t, &fakeArmRPC{Joint6Rad: 1.0})
+	start := time.Now()
+	if _, err := g.Grab(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatalf("Grab took %v; a fixed sleep is still in the path", time.Since(start))
+	}
+}
+
+func TestGripperSetPosition_RangeIsTheJointLimit(t *testing.T) {
+	g := newTestGripper(t, &fakeArmRPC{})
+	ctx := context.Background()
+	if err := g.SetPosition(ctx, -20, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err == nil {
+		t.Fatal("-20 degrees is below the joint limit")
+	}
+	if err := g.SetPosition(ctx, 108, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err != nil {
+		t.Fatalf("108 degrees is inside the joint limit (108.9): %v", err)
+	}
+	if err := g.SetPosition(ctx, 120, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err == nil {
+		t.Fatal("120 degrees is above the joint limit")
+	}
+}
+
+func TestGripperIsMoving_FromTwoReads(t *testing.T) {
+	g := newTestGripper(t, &fakeArmRPC{Joint6Series: []float64{0.2, 0.6}})
+	moving, err := g.IsMoving(context.Background())
+	if err != nil || !moving {
+		t.Fatalf("expected moving, got %v %v", moving, err)
+	}
+	g = newTestGripper(t, &fakeArmRPC{Joint6Series: []float64{0.2, 0.201}})
+	moving, err = g.IsMoving(context.Background())
+	if err != nil || moving {
+		t.Fatalf("expected still, got %v %v", moving, err)
+	}
+}
+
+func TestGripperIsMoving_DoesNotReportArmMotion(t *testing.T) {
+	// The arm says it is moving; the jaw is not. The gripper must say false.
+	g := newTestGripper(t, &fakeArmRPC{Joint6Rad: 0.5, ArmMoving: true})
+	moving, err := g.IsMoving(context.Background())
+	if err != nil || moving {
+		t.Fatalf("gripper reported arm motion: %v %v", moving, err)
+	}
+}
+
+func TestGripperIsMoving_NoFeedbackIsFalse(t *testing.T) {
+	g := newTestGripper(t, &fakeArmRPC{DoCommandError: errNoFeedback})
+	moving, err := g.IsMoving(context.Background())
+	if err != nil || moving {
+		t.Fatalf("expected false, nil on a no-feedback transport; got %v %v", moving, err)
 	}
 }

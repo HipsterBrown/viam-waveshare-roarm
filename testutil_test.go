@@ -169,21 +169,22 @@ func (f *fakeController) Close(ctx context.Context) error {
 }
 
 // fakeArmRPC implements the narrow armRPC interface the gripper consumes.
-// Only `get_gripper_rad`, `set_gripper_rad`, and `stop_gripper` commands
-// are dispatched — matching what the gripper actually sends. Tests can
-// configure the simulated joint-6 reading via Joint6Rad and inspect the
-// last commanded value via LastSetRad.
+// Joint6Rad is the simulated position; a set moves it there unless HoldStill
+// (a blocked jaw). Joint6Series, when non-empty, is returned one value per
+// get before falling back to Joint6Rad, so IsMoving's two reads can differ.
 type fakeArmRPC struct {
 	mu             sync.Mutex
 	Joint6Rad      float64
+	Joint6Series   []float64
+	HoldStill      bool
+	ArmMoving      bool
 	LastCommand    string
 	LastSetRad     float64
 	LastSetSpeed   float64
 	LastSetAcc     float64
+	LastWait       bool
 	StopCalls      int
-	MoveDeadline   time.Time
 	DoCommandError error
-	IsMovingError  error
 }
 
 func (f *fakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
@@ -196,17 +197,24 @@ func (f *fakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) 
 	f.LastCommand = name
 	switch name {
 	case cmdGetGripperRad:
+		if len(f.Joint6Series) > 0 {
+			v := f.Joint6Series[0]
+			f.Joint6Series = f.Joint6Series[1:]
+			return map[string]interface{}{keyRad: v}, nil
+		}
 		return map[string]interface{}{keyRad: f.Joint6Rad}, nil
 	case cmdSetGripperRad:
 		rad, _ := cmd[keyRad].(float64)
 		f.LastSetRad = rad
-		if v, ok := cmd[keySpeed].(float64); ok {
-			f.LastSetSpeed = v
+		f.LastSetSpeed, _ = cmd[keySpeed].(float64)
+		f.LastSetAcc, _ = cmd[keyAcc].(float64)
+		f.LastWait = true
+		if w, ok := cmd[keyWait].(bool); ok {
+			f.LastWait = w
 		}
-		if v, ok := cmd[keyAcc].(float64); ok {
-			f.LastSetAcc = v
+		if !f.HoldStill {
+			f.Joint6Rad = rad
 		}
-		f.Joint6Rad = rad
 		return map[string]interface{}{"success": true}, nil
 	case cmdStopGripper:
 		f.StopCalls++
@@ -219,8 +227,5 @@ func (f *fakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) 
 func (f *fakeArmRPC) IsMoving(ctx context.Context) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.IsMovingError != nil {
-		return false, f.IsMovingError
-	}
-	return time.Now().Before(f.MoveDeadline), nil
+	return f.ArmMoving, nil
 }
