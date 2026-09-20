@@ -89,7 +89,8 @@ func TestStreamed_OneWritePerPointAtScheduledTimes(t *testing.T) {
 		t.Fatalf("last target %v: want joint 1 at 0.03 and gripper preserved", fc.LastRadians)
 	}
 	d := deadlines()
-	want := []time.Time{streamEpoch, streamEpoch.Add(100 * time.Millisecond), streamEpoch.Add(200 * time.Millisecond)}
+	// Point k is written when point k-1 is due: 0, 0, +100 ms.
+	want := []time.Time{streamEpoch, streamEpoch, streamEpoch.Add(100 * time.Millisecond)}
 	if len(d) != 3 {
 		t.Fatalf("sleeps %v, want %v", d, want)
 	}
@@ -200,5 +201,21 @@ func TestStreamed_ClampsToModelLimits(t *testing.T) {
 	// tolerance, as arm_test.go's clamp tests do.
 	if fc.LastRadians[0] > math.Pi+1e-4 {
 		t.Fatalf("joint 1 written at %v, above the model limit", fc.LastRadians[0])
+	}
+}
+
+// A sparse trajectory's last segment can be long; the final settle must wait
+// for it rather than the 500 ms floor.
+func TestStreamed_FinalSettleWaitsForTheLastSegment(t *testing.T) {
+	fc := &fakeController{}
+	r, _ := streamTestArm(t, fc)
+	// 1 rad in 2 s: the write goes out at t=0 and the arm needs ~2 s.
+	_, err := runStream(context.Background(), r,
+		[]arm.TrajectoryPoint{pt(0, 0), pt(2*time.Second, 1.0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.LastSettleTimeout < 3500*time.Millisecond {
+		t.Fatalf("final settle timeout %v; want about 2x the 2 s segment", fc.LastSettleTimeout)
 	}
 }

@@ -55,13 +55,15 @@ func checkTrajectoryTime(prev, t time.Duration) error {
 	return nil
 }
 
-// MoveThroughJointPositionsStreamed writes each point as one joint command at
-// start + Time. The firmware interpolates on-device toward each goal, so each
-// segment is sent at the speed that covers its longest joint travel in its
-// time slot; that is what keeps the arm on the producer's schedule rather than
-// racing ahead. No feedback is read inside the loop; the arm settles once
-// after the last point. Late points are written immediately, never dropped.
-// Constraints and extra are ignored.
+// MoveThroughJointPositionsStreamed writes each point as one joint command
+// when the PREVIOUS point's time arrives, at the speed that covers the
+// segment's longest joint travel by this point's own time. The firmware
+// interpolates on-device toward each goal, so writing goal k at T(k-1) with
+// speed travel/(T(k)-T(k-1)) is what puts the arm at point k at T(k); writing
+// it at T(k) would trail the schedule by one segment. Point 0 is written at
+// start. No feedback is read inside the loop; the arm settles once after the
+// last point, with a timeout sized from the last segment. Late points are
+// written immediately, never dropped. Constraints and extra are ignored.
 //
 // Only the FIRST point is gated (a settled move if the arm is more than
 // streamStartGapRad away). A large jump between later points reaches the
@@ -89,6 +91,8 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 	var gate, maxLate time.Duration
 	var last []float64 // full 6-joint target of the previous point
 	var gripper float64
+	var lastTravelRad float64 // longest arm-joint travel of the last segment
+	lastSpeed := speed
 	prev := time.Duration(-1)
 	idx, late := 0, 0
 	for {
@@ -134,10 +138,15 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 				start = r.clock.Time()
 				gate = start.Sub(wall)
 			} else {
-				travelDeg := maxTravel(last, clamped, armMask) * 180 / math.Pi
-				segSpeed = speedToUnits(travelDeg / (p.Time - prev).Seconds())
+				lastTravelRad = maxTravel(last, clamped, armMask)
+				segSpeed = speedToUnits(lastTravelRad * 180 / math.Pi / (p.Time - prev).Seconds())
 			}
-			due := start.Add(p.Time)
+			// Point 0 goes out at start; point k goes out when point k-1 is
+			// due, so the firmware has the whole segment to reach it.
+			due := start
+			if idx > 0 {
+				due = start.Add(prev)
+			}
 			if behind := r.clock.Time().Sub(due); behind >= time.Millisecond {
 				late++
 				if behind > maxLate {
@@ -151,7 +160,7 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 			if err := ctrl.SetJointRadians(ctx, target, segSpeed, acc); err != nil {
 				return fmt.Errorf("streamed: point %d: %w", idx, err)
 			}
-			prev, idx, last = p.Time, idx+1, target
+			prev, idx, last, lastSpeed = p.Time, idx+1, target, segSpeed
 		}
 		if len(batch) == 0 {
 			continue
@@ -166,7 +175,9 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 		return nil
 	}
 	settleFrom := r.clock.Time()
-	_, err := ctrl.WaitUntilSettled(ctx, last, armMask, settleTimeoutFor(streamStartGapRad, speed))
+	// The last point was written when its predecessor was due, so the arm
+	// still has that whole segment to travel; size the wait from it.
+	_, err := ctrl.WaitUntilSettled(ctx, last, armMask, settleTimeoutFor(lastTravelRad, lastSpeed))
 	now := r.clock.Time()
 	r.logger.Infof("streamed %d points over %v: gate %v, late %d (max %v), settle %v, wall %v",
 		idx, prev, gate.Round(time.Millisecond), late, maxLate.Round(time.Millisecond),

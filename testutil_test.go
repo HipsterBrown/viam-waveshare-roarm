@@ -12,22 +12,23 @@ var _ RoArmHandle = (*fakeController)(nil)
 
 // fakeController implements RoArmHandle for tests.
 type fakeController struct {
-	mu            sync.Mutex
-	LastSpeed     int
-	LastAcc       int
-	LastRadians   []float64
-	LastJoint     int
-	LastTorque    *bool
-	LastLED       *int
-	FeedbackCalls int
-	Feedback      FeedbackData
-	FailOn        string // method name to return error from, empty = never
-	FailWith      error  // error FailOn returns; nil means a generic fake error
-	Moving        bool   // what IsMoving reports
-	HoldStill     bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
-	SettleCalls   int
-	WriteCount    int  // SetJointRadian(s) calls
-	Closed        bool // set by Close
+	mu                sync.Mutex
+	LastSpeed         int
+	LastAcc           int
+	LastRadians       []float64
+	LastJoint         int
+	LastTorque        *bool
+	LastLED           *int
+	FeedbackCalls     int
+	Feedback          FeedbackData
+	FailOn            string // method name to return error from, empty = never
+	FailWith          error  // error FailOn returns; nil means a generic fake error
+	Moving            bool   // what IsMoving reports
+	HoldStill         bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
+	SettleCalls       int
+	LastSettleTimeout time.Duration // timeout passed to the most recent WaitUntilSettled
+	WriteCount        int           // SetJointRadian(s) calls
+	Closed            bool          // set by Close
 }
 
 func (f *fakeController) err(method string) error {
@@ -155,6 +156,7 @@ func (f *fakeController) WaitUntilSettled(ctx context.Context, target []float64,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.SettleCalls++
+	f.LastSettleTimeout = timeout
 	return f.currentLocked(), nil
 }
 

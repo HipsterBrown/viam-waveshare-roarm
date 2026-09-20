@@ -38,8 +38,8 @@ const grabMarginRad = 0.05
 
 // armRPC is the narrow slice of the arm.Arm gRPC client the gripper consumes.
 // Dependencies resolved via resource.Dependencies give us a gRPC client, not
-// the local *roarmM3 struct, so every controller interaction must round-trip
-// through DoCommand / IsMoving on that client.
+// the local *roarmM3 struct, so every joint-6 interaction round-trips through
+// DoCommand on that client (see gripper_bridge.go).
 type armRPC interface {
 	DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error)
 }
@@ -323,10 +323,6 @@ func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referencefr
 	if g.closed.Load() {
 		return errGripperClosed
 	}
-	if len(inputs) == 0 {
-		return nil
-	}
-
 	for _, inputSet := range inputs {
 		if len(inputSet) != 0 {
 			return fmt.Errorf("the gripper model has no degrees of freedom; use the set_position DoCommand to move the jaw, got %d inputs", len(inputSet))

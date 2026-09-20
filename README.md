@@ -245,15 +245,15 @@ The gripper reports a zero-DoF kinematic model whose leaf, `tcp`, is the grasp p
 
 ## Joint Limits and Specifications
 
-The RoArm-M3 has the following joint limits:
+The module enforces these joint limits, taken from the kinematic model (`roarm_m3.json`, which mirrors the Waveshare URDF). Joint 6 is the gripper, in the software frame:
 
 | Joint | Range (Radians) | Range (Degrees) | Description |
 |-------|-----------------|-----------------|-------------|
-| 1     | -3.3 to 3.3     | -189° to 189°   | Base rotation |
-| 2     | -1.9 to 1.9     | -109° to 109°   | Shoulder |
-| 3     | -1.2 to 3.3     | -69° to 189°    | Elbow |
-| 4     | -1.9 to 1.9     | -109° to 109°   | Wrist tilt |
-| 5     | -3.3 to 3.3     | -189° to 189°   | Wrist rotation |
+| 1     | -3.14 to 3.14   | -180° to 180°   | Base rotation |
+| 2     | -1.57 to 1.57   | -90° to 90°     | Shoulder |
+| 3     | -1.0 to 2.95    | -57° to 169°    | Elbow |
+| 4     | -1.57 to 1.57   | -90° to 90°     | Wrist tilt |
+| 5     | -3.14 to 3.14   | -180° to 180°   | Wrist rotation |
 | 6     | -0.2 to 1.9     | -11° to 109°    | Gripper |
 
 ## WiFi Configuration
