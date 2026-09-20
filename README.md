@@ -86,7 +86,7 @@ For wireless control over WiFi:
 }
 ```
 
-Position feedback over HTTP depends on the firmware build; if this unit does not return feedback over HTTP the module logs a warning at startup, and position reads (joint positions, end position, settle detection, `IsMoving`) require a serial connection. Serial is recommended.
+Position feedback over HTTP was verified on the bench (a T:105 request to `/js?json=` returns a T:1051 frame), so HTTP mode supports position reads, settle detection, and `IsMoving`. Serial is still recommended for streamed trajectories: each point is one HTTP round trip over the arm's WiFi.
 
 
 ### DoCommand
@@ -291,8 +291,12 @@ The arm connects to your existing WiFi network. You'll need to configure this th
 
 Measured on a RoArm-M3 over USB serial at 115200 baud:
 
-- Measured deg/s per commanded speed: TBD (B1).
-- Settle latency: TBD (B2).
+- Speed and acceleration units: joints 1, 2 and 5 commanded at 20, 50 and 100 deg/s with `cmd/cli time-move` ran within 10% of the commanded speed, confirming the 4096 steps/rev conversion; no constant adjustment was needed.
+- Settle detection: a 30 degree move at 50 deg/s returned within 150 ms of the arm stopping, polling feedback every 50 ms with no frame errors.
+- Joint limits: joints 2 and 3 reach the model limits (±90°, -57° to 169°) without binding.
+- Geometry: the 52 mm mount offset, 63 mm mount-to-jaw-tip distance, and 70 x 40 x 70 mm jaw envelope match the physical arm.
+- Gripper: `Open`, an empty `Grab` (false) and a `Grab` on an object (true) each return when the jaw stops; gripper `IsMoving` stays false while only the arm moves.
+- Reconfigure: a speed-only change does not reopen the serial port; a bad port leaves the previous connection working and reports the error.
 - Streamed trajectories (50 points at 10 Hz, ±0.3 rad sine on joint 1, `cmd/streambench`):
   - live producer, one point per batch at its own time: wall 5.30 s for a 4.9 s trajectory (34 ms start gate, 460 ms final settle), 0 late points. The arm follows one segment (100 ms) behind a live producer, which is inherent: a goal can only be written once it is known.
   - whole trajectory in one batch: wall 4.90 s, 103 ms final settle, 0 late points. Each point is written when its predecessor is due, so the arm arrives on schedule.
@@ -325,7 +329,6 @@ Two robustness layers are applied to handle occasional wire-level issues:
 - `move_to_home` runs at the configured speed (default 50 deg/s), keeps the gripper where it is, and returns after the arm settles.
 - `IsMoving` on arm and gripper is read from hardware; the gripper no longer reports arm motion.
 - Speed and acceleration attributes are validated at config time.
-- HTTP mode may not support position reads (see Communication).
 
 ## WaveShare RoArm-M3 Resources
 
