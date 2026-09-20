@@ -170,14 +170,18 @@ func TestDoCommand_SetLEDMissingParam(t *testing.T) {
 }
 
 func TestDoCommand_MoveToHome(t *testing.T) {
-	fc := &fakeController{}
+	const startGripper = 0.42
+	fc := &fakeController{Feedback: FeedbackData{G: startGripper}}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "move_to_home"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fc.HomeCalls != 1 {
-		t.Fatalf("expected 1 home call, got %d", fc.HomeCalls)
+	if fc.LastRadians[2] != math.Pi/2 {
+		t.Fatalf("expected elbow at pi/2, got %v", fc.LastRadians[2])
+	}
+	if fc.LastRadians[5] != startGripper {
+		t.Fatalf("expected the gripper preserved at %v, got %v", startGripper, fc.LastRadians[5])
 	}
 }
 

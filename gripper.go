@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
 	"go.viam.com/rdk/logging"
@@ -96,11 +95,16 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		return nil, fmt.Errorf("gripper %s: could not find arm %q in deps: %w", conf.ResourceName(), cfg.Arm, err)
 	}
 
+	model, err := buildGripperModel(conf.ResourceName().ShortName())
+	if err != nil {
+		return nil, fmt.Errorf("failed to build gripper kinematic model: %w", err)
+	}
+
 	g := &roarmM3Gripper{
 		name:      conf.ResourceName(),
 		logger:    logger,
 		armClient: armRes,
-		model:     referenceframe.NewSimpleModel("roarm_m3_gripper"),
+		model:     model,
 		opMgr:     operation.NewSingleOperationManager(),
 	}
 
@@ -234,11 +238,6 @@ func (g *roarmM3Gripper) IsMoving(ctx context.Context) (bool, error) {
 	return g.armClient.IsMoving(ctx)
 }
 
-// ModelFrame returns the reference frame model for the gripper
-func (g *roarmM3Gripper) ModelFrame() referenceframe.Model {
-	return g.model
-}
-
 // Additional helper methods for gripper control
 
 // GetPosition returns the current gripper position in degrees (-10 to 100).
@@ -307,17 +306,7 @@ func (g *roarmM3Gripper) CurrentInputs(ctx context.Context) ([]referenceframe.In
 	if g.closed.Load() {
 		return nil, errGripperClosed
 	}
-	position, err := g.GetPosition(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert degrees to radians
-	radians := position * math.Pi / 180.0
-
-	return []referenceframe.Input{
-		radians,
-	}, nil
+	return []referenceframe.Input{}, nil
 }
 
 func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referenceframe.Input) error {
@@ -329,22 +318,10 @@ func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referencefr
 	}
 
 	for _, inputSet := range inputs {
-		if len(inputSet) != 1 {
-			return fmt.Errorf("expected 1 input for gripper, got %d", len(inputSet))
-		}
-
-		// Convert radians to degrees
-		degrees := inputSet[0] * 180.0 / math.Pi
-
-		if err := g.SetPosition(ctx, degrees, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err != nil {
-			return err
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if len(inputSet) != 0 {
+			return fmt.Errorf("the gripper model has no degrees of freedom; use the set_position DoCommand to move the jaw, got %d inputs", len(inputSet))
 		}
 	}
-
 	return nil
 }
 
@@ -388,13 +365,11 @@ func (g *roarmM3Gripper) Geometries(ctx context.Context, _ map[string]interface{
 	if g.closed.Load() {
 		return nil, errGripperClosed
 	}
-	// ~70mm wide, 40mm tall, 60mm deep jaw envelope, offset 30mm beyond the wrist.
-	offset := spatialmath.NewPoseFromPoint(r3.Vector{X: 0, Y: 0, Z: 30})
-	box, err := spatialmath.NewBox(offset, r3.Vector{X: 70, Y: 40, Z: 60}, "gripper-box")
+	gif, err := g.model.Geometries([]referenceframe.Input{})
 	if err != nil {
 		return nil, err
 	}
-	return []spatialmath.Geometry{box}, nil
+	return gif.Geometries(), nil
 }
 
 func (g *roarmM3Gripper) IsHoldingSomething(ctx context.Context, _ map[string]interface{}) (gripper.HoldingStatus, error) {

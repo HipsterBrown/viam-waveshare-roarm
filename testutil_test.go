@@ -19,7 +19,6 @@ type fakeController struct {
 	LastJoint     int
 	LastTorque    *bool
 	LastLED       *int
-	HomeCalls     int
 	FeedbackCalls int
 	Feedback      FeedbackData
 	FailOn        string // method name to return error from, empty = never
@@ -59,16 +58,6 @@ func (f *fakeController) SetLED(ctx context.Context, brightness int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.LastLED = &brightness
-	return nil
-}
-
-func (f *fakeController) MoveToHome(ctx context.Context) error {
-	if err := f.err("MoveToHome"); err != nil {
-		return err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.HomeCalls++
 	return nil
 }
 

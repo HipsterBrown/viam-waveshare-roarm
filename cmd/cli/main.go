@@ -21,7 +21,7 @@ func main() {
 
 	if flag.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "usage: roarm-cli [--host=X | --port=Y] <subcommand> [args...]")
-		fmt.Fprintln(os.Stderr, "subcommands: ping, feedback, home, move, gripper")
+		fmt.Fprintln(os.Stderr, "subcommands: ping, feedback, move, gripper")
 		os.Exit(2)
 	}
 
@@ -48,11 +48,6 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Printf("%+v\n", fb)
-	case "home":
-		if err := ctrl.MoveToHome(ctx); err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("OK")
 	case "move":
 		if len(args) < 3 {
 			log.Fatal("usage: move <joint> <rad> [speed] [acc]")

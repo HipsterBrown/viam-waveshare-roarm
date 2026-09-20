@@ -23,6 +23,9 @@ import (
 	"go.viam.com/utils/rpc"
 )
 
+// homeInputs is the arm's home pose: extended, elbow at 90 degrees.
+var homeInputs = []referenceframe.Input{0, 0, math.Pi / 2, 0, 0}
+
 var (
 	RoArmM3 = resource.NewModel("hipsterbrown", "waveshare-roarm", "arm")
 
@@ -497,7 +500,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		return map[string]interface{}{"success": err == nil}, err
 
 	case "move_to_home":
-		err := r.snapshotController().MoveToHome(ctx)
+		err := r.MoveToJointPositions(ctx, homeInputs, nil)
 		return map[string]interface{}{"success": err == nil}, err
 
 	case "get_feedback":

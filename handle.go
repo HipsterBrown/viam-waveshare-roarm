@@ -17,7 +17,6 @@ type RoArmHandle interface {
 	SetJointRadians(ctx context.Context, radians []float64, speed, acc int) error
 	GetJointRadians(ctx context.Context) ([]float64, error)
 	GetFeedback(ctx context.Context) (*FeedbackData, error)
-	MoveToHome(ctx context.Context) error // removed in Task 8
 	WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error)
 	IsMoving(ctx context.Context) (bool, error)
 	Close(ctx context.Context) error

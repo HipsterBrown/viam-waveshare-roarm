@@ -2,6 +2,7 @@ package waveshareroarm
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,8 +19,18 @@ func newTestGripper(t *testing.T, fa *fakeArmRPC) *roarmM3Gripper {
 	return &roarmM3Gripper{
 		armClient: fa,
 		logger:    logging.NewTestLogger(t),
+		model:     mustBuildGripperModel(t),
 		opMgr:     operation.NewSingleOperationManager(),
 	}
+}
+
+func mustBuildGripperModel(t *testing.T) referenceframe.Model {
+	t.Helper()
+	m, err := buildGripperModel("test-gripper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 func TestGripperOpenSendsJointLimit(t *testing.T) {
@@ -162,18 +173,17 @@ func TestGripperIsMoving(t *testing.T) {
 	}
 }
 
-func TestGripperModelFrameAndKinematics(t *testing.T) {
+func TestGripperKinematicsIsZeroDoF(t *testing.T) {
 	g := newTestGripper(t, &fakeArmRPC{})
-	g.model = mustLoadModel(t)
-	if g.ModelFrame() == nil {
-		t.Fatal("expected non-nil model frame")
-	}
 	m, err := g.Kinematics(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if m == nil {
 		t.Fatal("expected non-nil kinematics")
+	}
+	if len(m.DoF()) != 0 {
+		t.Fatalf("expected 0 DoF, got %d", len(m.DoF()))
 	}
 }
 
@@ -183,8 +193,11 @@ func TestGripperGeometries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(geos) == 0 {
-		t.Fatal("expected at least one geometry")
+	if len(geos) != 1 {
+		t.Fatalf("expected 1 geometry, got %d", len(geos))
+	}
+	if !strings.HasSuffix(geos[0].Label(), ":body") {
+		t.Fatalf("expected a label ending in :body, got %q", geos[0].Label())
 	}
 }
 
@@ -194,8 +207,8 @@ func TestGripperCurrentInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inputs) != 1 {
-		t.Fatalf("expected 1 input, got %d", len(inputs))
+	if len(inputs) != 0 {
+		t.Fatalf("expected 0 inputs, got %d", len(inputs))
 	}
 }
 
@@ -292,26 +305,14 @@ func TestGripperGoToInputs_Empty(t *testing.T) {
 	}
 }
 
-func TestGripperGoToInputs_WrongLength(t *testing.T) {
-	g := newTestGripper(t, &fakeArmRPC{})
-	err := g.GoToInputs(context.Background(), nil)
-	if err == nil {
-		t.Fatal("expected error for wrong length")
-	}
-	err = g.GoToInputs(context.Background(), []referenceframe.Input{0, 1})
-	if err == nil {
-		t.Fatal("expected error for inputSet length != 1")
-	}
-}
-
-func TestGripperGoToInputs_Valid(t *testing.T) {
+func TestGripperGoToInputs_RejectsNonEmpty(t *testing.T) {
 	fa := &fakeArmRPC{}
 	g := newTestGripper(t, fa)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_ = g.GoToInputs(ctx, []referenceframe.Input{0.5})
-	if fa.LastCommand != "set_gripper_rad" {
-		t.Fatalf("expected set_gripper_rad dispatched, got %q", fa.LastCommand)
+	if err := g.GoToInputs(context.Background(), []referenceframe.Input{0.5}); err == nil {
+		t.Fatal("expected an error for a non-empty input set")
+	}
+	if fa.LastCommand != "" {
+		t.Fatalf("expected no command dispatched, got %q", fa.LastCommand)
 	}
 }
 

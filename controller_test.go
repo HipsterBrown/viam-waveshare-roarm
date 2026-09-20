@@ -455,15 +455,6 @@ func TestHTTPSetJointRadians(t *testing.T) {
 	}
 }
 
-func TestHTTPMoveToHome(t *testing.T) {
-	c, srv := newHTTPTestController(t, 1051, FeedbackData{})
-	defer srv.Close()
-	defer c.Close(context.Background())
-	if err := c.MoveToHome(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestHTTPTestConnection(t *testing.T) {
 	c, srv := newHTTPTestController(t, 1051, FeedbackData{})
 	defer srv.Close()
