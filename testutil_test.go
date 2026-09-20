@@ -26,6 +26,7 @@ type fakeController struct {
 	Moving        bool   // what IsMoving reports
 	HoldStill     bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
 	SettleCalls   int
+	WriteCount    int  // SetJointRadian(s) calls
 	Closed        bool // set by Close
 }
 
@@ -71,6 +72,7 @@ func (f *fakeController) SetJointRadian(ctx context.Context, joint int, radian f
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.WriteCount++
 	f.LastJoint, f.LastSpeed, f.LastAcc = joint, speed, acc
 	if cap(f.LastRadians) < 6 {
 		f.LastRadians = make([]float64, 6)
@@ -91,6 +93,7 @@ func (f *fakeController) SetJointRadians(ctx context.Context, radians []float64,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.WriteCount++
 	f.LastRadians = append([]float64(nil), radians...)
 	f.LastSpeed, f.LastAcc = speed, acc
 	if !f.HoldStill {

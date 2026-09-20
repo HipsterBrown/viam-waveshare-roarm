@@ -140,6 +140,9 @@ type roarmM3 struct {
 	// IsMoving answers true even before the servos report motion.
 	opInFlight atomic.Bool
 
+	// clock schedules streamed trajectories; the zero value is the real clock.
+	clock clock
+
 	cancelCtx  context.Context
 	cancelFunc func()
 
