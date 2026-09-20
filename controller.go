@@ -653,12 +653,12 @@ func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error
 	}
 
 	radians := []float64{
-		feedback.B,                          // Joint 1
-		feedback.S,                          // Joint 2
-		feedback.E,                          // Joint 3
-		feedback.Wrist,                      // Joint 4
-		feedback.R,                          // Joint 5
-		gripperSoftwareToWire(feedback.G),   // Joint 6 (gripper)
+		feedback.B,                        // Joint 1
+		feedback.S,                        // Joint 2
+		feedback.E,                        // Joint 3
+		feedback.Wrist,                    // Joint 4
+		feedback.R,                        // Joint 5
+		gripperSoftwareToWire(feedback.G), // Joint 6 (gripper)
 	}
 
 	return radians, nil

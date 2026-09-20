@@ -19,8 +19,11 @@ update:
 	go get go.viam.com/rdk@latest
 	go mod tidy
 
+vet:
+	go vet ./...
+
 test:
-	go test ./...
+	go test -race ./...
 
 module.tar.gz: meta.json $(MODULE_BINARY)
 ifneq ($(VIAM_TARGET_OS), windows)
