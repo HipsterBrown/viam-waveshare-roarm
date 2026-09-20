@@ -2,6 +2,7 @@ package waveshareroarm
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -480,23 +481,6 @@ func TestArmReconfigure_MotionOnly(t *testing.T) {
 	}
 }
 
-func TestArmDoCommand_ExtraOverrides(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
-	r := newTestArm(t, fc)
-	// Exercise the extra-override path in MoveToJointPositions for speed/acceleration.
-	positions := []referenceframe.Input{0.1, 0, 0, 0, 0}
-	extra := map[string]interface{}{
-		"speed":        float64(30),
-		"acceleration": float64(50),
-	}
-	if err := r.MoveToJointPositions(context.Background(), positions, extra); err != nil {
-		t.Fatal(err)
-	}
-	if want := speedToUnits(30); fc.LastSpeed != want {
-		t.Fatalf("expected speed=%d, got %d", want, fc.LastSpeed)
-	}
-}
-
 func TestArmStopHoldsCurrentPosition(t *testing.T) {
 	fc := &fakeController{
 		Feedback: FeedbackData{B: 0.5, S: 0.3, E: 0.1, Wrist: 0.2, R: 0.4, G: 0.0},
@@ -596,4 +580,91 @@ func TestArmReconfigure_RacesWithReaders(t *testing.T) {
 		r.mu.Unlock()
 	}
 	<-done
+}
+
+func TestMoveToJointPositions_WritesThenSettles(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{G: 0.7}}
+	r := newTestArm(t, fc)
+	if err := r.MoveToJointPositions(context.Background(), []referenceframe.Input{0.5, 0, 0, 0, 0}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if fc.SettleCalls != 1 {
+		t.Fatalf("expected one settle wait, got %d", fc.SettleCalls)
+	}
+	if fc.LastRadians[0] != 0.5 || fc.LastRadians[5] != 0.7 {
+		t.Fatalf("target %v: want joint 1 at 0.5 and gripper preserved at 0.7", fc.LastRadians)
+	}
+	if fc.LastSpeed != speedToUnits(defaultSpeedDegsPerSec) {
+		t.Fatalf("speed %d, want configured default %d", fc.LastSpeed, speedToUnits(defaultSpeedDegsPerSec))
+	}
+}
+
+func TestMoveToJointPositions_SettleErrorIsReturned(t *testing.T) {
+	fc := &fakeController{FailOn: "WaitUntilSettled"}
+	r := newTestArm(t, fc)
+	if err := r.MoveToJointPositions(context.Background(), []referenceframe.Input{0.5, 0, 0, 0, 0}, nil); err == nil {
+		t.Fatal("expected the settle error")
+	}
+}
+
+func TestMoveToJointPositions_IgnoresExtraSpeed(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	extra := map[string]interface{}{"speed": float64(30), "acceleration": float64(50)}
+	if err := r.MoveToJointPositions(context.Background(), []referenceframe.Input{0.1, 0, 0, 0, 0}, extra); err != nil {
+		t.Fatal(err)
+	}
+	if fc.LastSpeed != speedToUnits(defaultSpeedDegsPerSec) {
+		t.Fatalf("extra speed must be ignored; got %d", fc.LastSpeed)
+	}
+}
+
+func TestArmIsMoving_TrueWhileAMoveIsInFlight(t *testing.T) {
+	fc := &fakeController{Moving: false}
+	r := newTestArm(t, fc)
+	r.opInFlight.Store(true)
+	moving, err := r.IsMoving(context.Background())
+	if err != nil || !moving {
+		t.Fatalf("expected true while in flight, got %v %v", moving, err)
+	}
+	r.opInFlight.Store(false)
+	moving, err = r.IsMoving(context.Background())
+	if err != nil || moving {
+		t.Fatalf("expected the controller's answer (false), got %v %v", moving, err)
+	}
+}
+
+func TestArmStop_UsesTheStopSpeed(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{B: 0.5}}
+	r := newTestArm(t, fc)
+	if err := r.Stop(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if fc.LastSpeed != speedToUnits(stopSpeedDegsPerSec) {
+		t.Fatalf("stop speed %d, want %d", fc.LastSpeed, speedToUnits(stopSpeedDegsPerSec))
+	}
+}
+
+func TestArmNoFeedbackTransport_PositionReadsError(t *testing.T) {
+	fc := &fakeController{FailOn: "GetJointRadians", FailWith: errNoFeedback}
+	r := newTestArm(t, fc)
+	if _, err := r.JointPositions(context.Background(), nil); !errors.Is(err, errNoFeedback) {
+		t.Fatalf("expected errNoFeedback, got %v", err)
+	}
+	if _, err := r.EndPosition(context.Background(), nil); !errors.Is(err, errNoFeedback) {
+		t.Fatalf("expected errNoFeedback, got %v", err)
+	}
+}
+
+func TestDoCommand_GetFeedbackReportsGripperInSoftwareFrame(t *testing.T) {
+	fc := &fakeController{Feedback: FeedbackData{G: 3.0}} // raw wire value
+	r := newTestArm(t, fc)
+	out, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "get_feedback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joints := out["joints"].(map[string]interface{})
+	if got := joints["gripper"].(float64); math.Abs(got-gripperSoftwareToWire(3.0)) > 1e-9 {
+		t.Fatalf("gripper reported %v, want software frame %v", got, gripperSoftwareToWire(3.0))
+	}
 }

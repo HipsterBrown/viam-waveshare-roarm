@@ -22,6 +22,7 @@ type fakeController struct {
 	FeedbackCalls int
 	Feedback      FeedbackData
 	FailOn        string // method name to return error from, empty = never
+	FailWith      error  // error FailOn returns; nil means a generic fake error
 	Moving        bool   // what IsMoving reports
 	HoldStill     bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
 	SettleCalls   int
@@ -32,6 +33,9 @@ func (f *fakeController) err(method string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.FailOn == method {
+		if f.FailWith != nil {
+			return f.FailWith
+		}
 		return &fakeErr{method}
 	}
 	return nil

@@ -7,9 +7,9 @@ import (
 	stdlib_errors "errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/pkg/errors"
 	commonpb "go.viam.com/api/common/v1"
@@ -136,6 +136,9 @@ type roarmM3 struct {
 	defaultAcc   int
 
 	closed atomic.Bool
+	// opInFlight is true between the start and end of a commanded move, so
+	// IsMoving answers true even before the servos report motion.
+	opInFlight atomic.Bool
 
 	cancelCtx  context.Context
 	cancelFunc func()
@@ -284,108 +287,77 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	}
 	ctx, done := r.opMgr.New(ctx)
 	defer done()
+	r.opInFlight.Store(true)
+	defer r.opInFlight.Store(false)
 
 	// Snapshot motion params under the mutex so concurrent Reconfigure /
 	// DoCommand writers can't race with us reading them here.
-	ctrl := r.snapshotController()
 	r.mu.Lock()
 	speed := r.defaultSpeed
 	acc := r.defaultAcc
 	jointLimits := r.jointLimits
 	r.mu.Unlock()
 
-	if len(positions) != 5 {
-		return fmt.Errorf("expected 5 joint positions for arm, got %d", len(positions))
+	if len(positions) != len(jointLimits) {
+		return fmt.Errorf("expected %d joint positions for arm, got %d", len(jointLimits), len(positions))
 	}
 
-	// Validate input ranges and clamp positions for the 5 arm joints
-	clampedPositions := make([]float64, len(positions))
-	for i, pos := range positions {
-		min, max := jointLimits[i][0], jointLimits[i][1]
-
-		// Validate and clamp the position
-		if pos < min || pos > max {
-			r.logger.Warnf("Joint %d position %.3f rad (%.1f°) out of range [%.3f, %.3f] rad ([%.1f°, %.1f°]), clamping",
-				i+1, pos, pos*180/math.Pi, min, max, min*180/math.Pi, max*180/math.Pi)
-		}
-		clampedPositions[i] = math.Max(min, math.Min(max, pos))
+	clamped, hits := clampToLimits(positions, jointLimits)
+	if len(hits) > 0 {
+		r.logger.Warnf("clamped to joint limits; the executed path will deviate from the requested one: %s", strings.Join(hits, "; "))
 	}
 
-	// Get current gripper position to preserve it
-	currentFullPositions, err := ctrl.GetJointRadians(ctx)
+	ctrl := r.snapshotController()
+	current, err := ctrl.GetJointRadians(ctx)
 	if err != nil {
 		return fmt.Errorf("MoveToJointPositions: read current positions: %w", err)
 	}
-	if len(currentFullPositions) < 6 {
-		return fmt.Errorf("MoveToJointPositions: short feedback (got %d joints)", len(currentFullPositions))
+	if len(current) < 6 {
+		return fmt.Errorf("MoveToJointPositions: short feedback (got %d joints)", len(current))
 	}
-	currentGripperPos := currentFullPositions[5] // Joint 6 (gripper)
+	target := make([]float64, 6)
+	copy(target, clamped)
+	target[5] = current[5] // preserve the gripper
 
-	// Create full 6-joint array with arm positions + current gripper position
-	fullPositions := make([]float64, 6)
-	copy(fullPositions, clampedPositions)
-	fullPositions[5] = currentGripperPos // Preserve gripper position
+	return r.moveAndSettle(ctx, ctrl, current, target, speed, acc)
+}
 
-	// Check for speed/acceleration overrides in extra parameters. These
-	// overrides are local to this move; do not mutate the struct fields.
-	if extra != nil {
-		if speedOverride, ok := extra["speed"]; ok {
-			if speedVal, ok := speedOverride.(float64); ok {
-				// Convert from degrees/sec to firmware units.
-				speed = speedToUnits(speedVal)
-			}
-		}
-		if accOverride, ok := extra["acceleration"]; ok {
-			if accVal, ok := accOverride.(float64); ok {
-				// Convert from degrees/sec^2 to internal units.
-				acc = accelToUnits(accVal)
-			}
+// clampToLimits clamps positions into limits and reports each clamp as a
+// human-readable string so callers can log once per move.
+func clampToLimits(positions []referenceframe.Input, limits [][2]float64) ([]float64, []string) {
+	clamped := make([]float64, len(positions))
+	var hits []string
+	for i, pos := range positions {
+		lo, hi := limits[i][0], limits[i][1]
+		clamped[i] = math.Max(lo, math.Min(hi, float64(pos)))
+		if clamped[i] != float64(pos) {
+			hits = append(hits, fmt.Sprintf("joint %d %.1f° -> [%.1f°, %.1f°]",
+				i+1, pos*180/math.Pi, lo*180/math.Pi, hi*180/math.Pi))
 		}
 	}
+	return clamped, hits
+}
 
-	// Send command to controller with all 6 joints (including preserved gripper)
-	if err := ctrl.SetJointRadians(ctx, fullPositions, speed, acc); err != nil {
+// moveAndSettle writes a full 6-joint target and blocks until joints 1-5
+// settle. Callers own the opInFlight flag (the streamed path calls this from
+// inside a longer in-flight window, so it must not clear the flag itself).
+func (r *roarmM3) moveAndSettle(ctx context.Context, ctrl RoArmHandle, current, target []float64, speed, acc int) error {
+	if err := ctrl.SetJointRadians(ctx, target, speed, acc); err != nil {
 		return fmt.Errorf("failed to move arm: %w", err)
 	}
-
-	// Calculate wait time based on movement distance and configured speed
-	currentArmPositions := make([]float64, 5)
-	if len(currentFullPositions) >= 5 {
-		copy(currentArmPositions, currentFullPositions[:5])
+	timeout := settleTimeoutFor(maxTravel(current, target, armMask), speed)
+	if _, err := ctrl.WaitUntilSettled(ctx, target, armMask, timeout); err != nil {
+		return fmt.Errorf("arm did not settle: %w", err)
 	}
-
-	maxMovement := 0.0
-	for i, target := range clampedPositions {
-		movement := math.Abs(target - currentArmPositions[i])
-		if movement > maxMovement {
-			maxMovement = movement
-		}
-	}
-
-	// Calculate move time based on configured speed (convert internal units back to rad/sec)
-	speedDegPerSec := speedFromUnits(speed)
-	speedRadPerSec := speedDegPerSec * math.Pi / 180.0
-	moveTimeSeconds := maxMovement / speedRadPerSec
-	if moveTimeSeconds < 0.1 {
-		moveTimeSeconds = 0.1 // Minimum move time
-	}
-	if moveTimeSeconds > 10.0 {
-		moveTimeSeconds = 10.0 // Maximum move time for safety
-	}
-
-	// Wait for movement to complete
-	select {
-	case <-time.After(time.Duration(moveTimeSeconds * float64(time.Second))):
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
 	return nil
 }
 
 func (r *roarmM3) MoveThroughJointPositions(ctx context.Context, positions [][]referenceframe.Input, options *arm.MoveOptions, extra map[string]interface{}) error {
 	if r.closed.Load() {
 		return errClosed
+	}
+	if options != nil {
+		r.logger.Debug("MoveOptions are not yet honored by this module (sub-project 3); using configured speed and acceleration")
 	}
 	for _, jointPositions := range positions {
 		if err := r.MoveToJointPositions(ctx, jointPositions, extra); err != nil {
@@ -520,7 +492,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 				"elbow":    feedback.E,
 				"wrist":    feedback.Wrist,
 				"roll":     feedback.R,
-				"gripper":  feedback.G,
+				"gripper":  gripperSoftwareToWire(feedback.G),
 			},
 			"torques": map[string]interface{}{
 				"base":     feedback.TB,
@@ -537,7 +509,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("set_speed requires 'value' number")
 		}
-		if speed < 3 || speed > 180 {
+		if speed < minSpeedDegsPerSec || speed > maxSpeedDegsPerSec {
 			return nil, fmt.Errorf("speed out of range: %.1f", speed)
 		}
 		r.mu.Lock()
@@ -550,7 +522,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("set_acceleration requires 'value' number")
 		}
-		if acc < 10 || acc > 500 {
+		if acc < minAccelDegsPerSecSq || acc > maxAccelDegsPerSecSq {
 			return nil, fmt.Errorf("accel out of range: %.1f", acc)
 		}
 		r.mu.Lock()
@@ -617,6 +589,9 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 func (r *roarmM3) IsMoving(ctx context.Context) (bool, error) {
 	if r.closed.Load() {
 		return false, errClosed
+	}
+	if r.opInFlight.Load() {
+		return true, nil
 	}
 	return r.snapshotController().IsMoving(ctx)
 }
