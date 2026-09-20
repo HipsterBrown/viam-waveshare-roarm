@@ -40,7 +40,7 @@ func newHTTPTestController(t *testing.T, respT int, body FeedbackData) (*RoArmCo
 
 func TestCommandMarshalJSON_WithData(t *testing.T) {
 	cmd := &Command{
-		T: JOINT_RADIAN_CTRL,
+		T: cmdJointRadianCtrl,
 		Data: map[string]interface{}{
 			"joint": 1,
 			"rad":   0.5,
@@ -54,7 +54,7 @@ func TestCommandMarshalJSON_WithData(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatal(err)
 	}
-	if int(out["T"].(float64)) != JOINT_RADIAN_CTRL {
+	if int(out["T"].(float64)) != cmdJointRadianCtrl {
 		t.Fatal("T mismatch")
 	}
 	if int(out["joint"].(float64)) != 1 {
@@ -66,7 +66,7 @@ func TestCommandMarshalJSON_WithData(t *testing.T) {
 }
 
 func TestCommandMarshalJSON_EmptyData(t *testing.T) {
-	cmd := &Command{T: FEEDBACK_GET, Data: map[string]interface{}{}}
+	cmd := &Command{T: cmdFeedbackGet, Data: map[string]interface{}{}}
 	data, err := cmd.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
@@ -671,7 +671,7 @@ func TestRoArmControllerClose_HTTPMode(t *testing.T) {
 }
 
 func TestCommandMarshalJSON_NilData(t *testing.T) {
-	cmd := &Command{T: FEEDBACK_GET}
+	cmd := &Command{T: cmdFeedbackGet}
 	data, err := cmd.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)

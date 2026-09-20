@@ -52,3 +52,9 @@ func accelToUnits(degPerSec2 float64) int {
 }
 
 func accelFromUnits(units int) float64 { return float64(units) * accUnitDegsPerSecSq }
+
+// Exported for cmd/cli. Everything inside the package uses the lowercase forms.
+func SpeedToUnits(degPerSec float64) int  { return speedToUnits(degPerSec) }
+func AccelToUnits(degPerSec2 float64) int { return accelToUnits(degPerSec2) }
+func DefaultSpeedUnits() int              { return speedToUnits(defaultSpeedDegsPerSec) }
+func DefaultAccelUnits() int              { return accelToUnits(defaultAccelDegsPerSecSq) }

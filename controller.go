@@ -25,27 +25,14 @@ import (
 // the same function converts either direction.
 func gripperSoftwareToWire(r float64) float64 { return math.Pi - r }
 
+// Firmware command types (the "T" field). Only the ones this module sends.
 const (
-	// Command types matching the Python SDK
-	ECHO_SET                     = 605
-	MIDDLE_SET                   = 502
-	LED_CTRL                     = 114
-	TORQUE_SET                   = 210
-	DYNAMIC_ADAPTATION_SET       = 112
-	FEEDBACK_GET                 = 105
-	JOINT_RADIAN_CTRL            = 101
-	JOINTS_RADIAN_CTRL           = 102
-	JOINT_ANGLE_CTRL             = 121
-	JOINTS_ANGLE_CTRL            = 122
-	GRIPPER_MODE_SET             = 222
-	POSE_CTRL                    = 1041
-	WIFI_ON_BOOT                 = 401
-	AP_SET                       = 402
-	STA_SET                      = 403
-	APSTA_SET                    = 404
-	WIFI_CONFIG_CREATE_BY_STATUS = 406
-	WIFI_CONFIG_CREATE_BY_INPUT  = 407
-	WIFI_STOP                    = 408
+	cmdFeedbackGet      = 105 // answered with a T:1051 frame
+	cmdJointRadianCtrl  = 101 // one joint: joint, rad, spd, acc
+	cmdJointsRadianCtrl = 102 // all joints: base..hand, spd, acc
+	cmdLEDCtrl          = 114
+	cmdTorqueSet        = 210
+	feedbackFrameT      = 1051
 
 	// Default timeouts
 	DefaultHTTPTimeout   = 5 * time.Second
@@ -258,8 +245,8 @@ func extractLastValidFeedback(buf []byte) (*FeedbackData, []byte, bool) {
 }
 
 // feedbackResponseTs are the frame types the firmware sends in reply to a
-// FEEDBACK_GET. Nothing else is ever waited for (see write vs query).
-var feedbackResponseTs = map[int]bool{1051: true, FEEDBACK_GET: true}
+// cmdFeedbackGet. Nothing else is ever waited for (see write vs query).
+var feedbackResponseTs = map[int]bool{feedbackFrameT: true, cmdFeedbackGet: true}
 
 // httpSupportsFeedback records whether this firmware's /js endpoint returns a
 // T:1051 body for a T:105 request. Bench task B9 decides it. When false the
@@ -295,7 +282,7 @@ func (c *RoArmController) query(ctx context.Context) (*FeedbackData, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cmdBytes, err := json.Marshal(&Command{T: FEEDBACK_GET, Data: map[string]interface{}{}})
+	cmdBytes, err := json.Marshal(&Command{T: cmdFeedbackGet, Data: map[string]interface{}{}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal command: %w", err)
 	}
@@ -479,7 +466,7 @@ func (c *RoArmController) IsMoving(ctx context.Context) (bool, error) {
 // SetTorque enables or disables torque for all joints
 func (c *RoArmController) SetTorque(ctx context.Context, enable bool) error {
 	cmd := &Command{
-		T: TORQUE_SET,
+		T: cmdTorqueSet,
 		Data: map[string]interface{}{
 			"cmd": 0,
 		},
@@ -498,7 +485,7 @@ func (c *RoArmController) SetLED(ctx context.Context, brightness int) error {
 	}
 
 	cmd := &Command{
-		T: LED_CTRL,
+		T: cmdLEDCtrl,
 		Data: map[string]interface{}{
 			"led": brightness,
 		},
@@ -527,7 +514,7 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 	}
 
 	cmd := &Command{
-		T: JOINT_RADIAN_CTRL,
+		T: cmdJointRadianCtrl,
 		Data: map[string]interface{}{
 			"joint": joint,
 			"rad":   wireRadian,
@@ -558,7 +545,7 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 	}
 
 	cmd := &Command{
-		T: JOINTS_RADIAN_CTRL,
+		T: cmdJointsRadianCtrl,
 		Data: map[string]interface{}{
 			"base":     radians[0],
 			"shoulder": radians[1],
