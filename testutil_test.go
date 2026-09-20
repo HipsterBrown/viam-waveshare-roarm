@@ -26,6 +26,7 @@ type fakeController struct {
 	Moving        bool   // what IsMoving reports
 	HoldStill     bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
 	SettleCalls   int
+	Closed        bool // set by Close
 }
 
 func (f *fakeController) err(method string) error {
@@ -167,7 +168,12 @@ func (f *fakeController) IsMoving(ctx context.Context) (bool, error) {
 	return f.Moving, nil
 }
 
-func (f *fakeController) Close(ctx context.Context) error { return nil }
+func (f *fakeController) Close(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Closed = true
+	return nil
+}
 
 // fakeArmRPC implements the narrow armRPC interface the gripper consumes.
 // Only `get_gripper_rad`, `set_gripper_rad`, and `stop_gripper` commands

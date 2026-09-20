@@ -441,30 +441,6 @@ func TestArmNewClientFromConn(t *testing.T) {
 	}
 }
 
-func TestNewRoArmM3_RejectsBadSpeed(t *testing.T) {
-	conf := resource.Config{
-		Name:                "arm",
-		API:                 resource.APINamespace("rdk").WithType("component").WithSubtype("arm"),
-		ConvertedAttributes: &RoArmM3Config{Host: "1.2.3.4", SpeedDegsPerSec: 1000},
-	}
-	_, err := newRoArmM3(context.Background(), nil, conf, logging.NewTestLogger(t))
-	if err == nil {
-		t.Fatal("expected error for bad speed")
-	}
-}
-
-func TestNewRoArmM3_RejectsBadAccel(t *testing.T) {
-	conf := resource.Config{
-		Name:                "arm",
-		API:                 resource.APINamespace("rdk").WithType("component").WithSubtype("arm"),
-		ConvertedAttributes: &RoArmM3Config{Host: "1.2.3.4", AccelerationDegsPerSec: 1000},
-	}
-	_, err := newRoArmM3(context.Background(), nil, conf, logging.NewTestLogger(t))
-	if err == nil {
-		t.Fatal("expected error for bad accel")
-	}
-}
-
 func TestNewRoArmM3_ConstructsHTTP(t *testing.T) {
 	// newRoArmM3 now requires a motion service dependency (builtin by default),
 	// which this test historically passed as nil deps. Skipped pending a
@@ -495,36 +471,6 @@ func TestArmReconfigure_MotionOnly(t *testing.T) {
 	}
 	if want := accelToUnits(120); r.defaultAcc != want {
 		t.Fatalf("expected defaultAcc=%d, got %d", want, r.defaultAcc)
-	}
-}
-
-func TestArmReconfigure_RejectsBadSpeed(t *testing.T) {
-	fc := &fakeController{}
-	r := newTestArm(t, fc)
-	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
-	conf := resource.Config{
-		ConvertedAttributes: &RoArmM3Config{
-			Host:            "1.2.3.4",
-			SpeedDegsPerSec: 1000, // out of range
-		},
-	}
-	if err := r.Reconfigure(context.Background(), nil, conf); err == nil {
-		t.Fatal("expected error for out-of-range speed")
-	}
-}
-
-func TestArmReconfigure_RejectsBadAccel(t *testing.T) {
-	fc := &fakeController{}
-	r := newTestArm(t, fc)
-	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
-	conf := resource.Config{
-		ConvertedAttributes: &RoArmM3Config{
-			Host:                   "1.2.3.4",
-			AccelerationDegsPerSec: 1000, // out of range
-		},
-	}
-	if err := r.Reconfigure(context.Background(), nil, conf); err == nil {
-		t.Fatal("expected error for out-of-range accel")
 	}
 }
 
@@ -593,4 +539,53 @@ func TestMovePreservesGripperPosition(t *testing.T) {
 	if fc.LastRadians[5] != 0.5 {
 		t.Fatalf("expected gripper preserved at 0.5, got %v", fc.LastRadians[5])
 	}
+}
+
+// A reopen that fails must leave the old controller and config in place.
+func TestArmReconfigure_FailedReopenKeepsOldController(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
+	conf := resource.Config{
+		Name:                "arm",
+		ConvertedAttributes: &RoArmM3Config{Port: "/dev/this-port-does-not-exist-roarm-test"},
+	}
+	if err := r.Reconfigure(context.Background(), nil, conf); err == nil {
+		t.Fatal("expected the reopen to fail")
+	}
+	if r.snapshotController() != fc {
+		t.Fatal("old controller was replaced by a failed reopen")
+	}
+	if r.cfg.Host != "1.2.3.4" {
+		t.Fatal("config was replaced by a failed reopen")
+	}
+	if fc.Closed {
+		t.Fatal("old controller was closed by a failed reopen, leaving a dead arm")
+	}
+}
+
+// Reconfigure swaps the controller under r.mu; readers must go through
+// snapshotController. Run with -race.
+func TestArmReconfigure_RacesWithReaders(t *testing.T) {
+	fc := &fakeController{}
+	r := newTestArm(t, fc)
+	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			_, _ = r.IsMoving(context.Background())
+			_ = r.Stop(context.Background(), nil)
+			_, _ = r.DoCommand(context.Background(), map[string]interface{}{"command": "set_torque", "enable": true})
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		conf := resource.Config{Name: "arm", ConvertedAttributes: &RoArmM3Config{
+			Host: "1.2.3.4", SpeedDegsPerSec: float32(40 + i%20),
+		}}
+		if err := r.Reconfigure(context.Background(), nil, conf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
 }
