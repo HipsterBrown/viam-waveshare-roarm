@@ -5,11 +5,11 @@ import (
 	stdlib_errors "errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/components/gripper"
 	"go.viam.com/rdk/logging"
@@ -23,23 +23,25 @@ var (
 	RoArmM3Gripper = resource.NewModel("hipsterbrown", "waveshare-roarm", "gripper")
 )
 
-const (
-	// gripperOpenRad / gripperGrabRad match the joint-6 limits from
-	// controller.RoArmM3JointLimits. Using the actual limit extremes
-	// avoids the off-by-range problem that existed when these were
-	// hardcoded degree values (100, -10) combined with the pi-minus-radian
-	// transform.
-	gripperOpenRad = 1.9  // upper limit of joint 6 (fully open)
-	gripperGrabRad = -0.2 // lower limit of joint 6 (fully closed)
+var (
+	// gripperOpenRad / gripperGrabRad are the joint-6 limits from
+	// gripperJointLimits. Using the actual limit extremes avoids the
+	// off-by-range problem that existed when these were hardcoded degree
+	// values (100, -10) combined with the pi-minus-radian transform.
+	gripperOpenRad = gripperJointLimits[1] // upper limit of joint 6 (fully open)
+	gripperGrabRad = gripperJointLimits[0] // lower limit of joint 6 (fully closed)
 )
+
+// grabMarginRad is how far short of the closed limit the jaw has to stop
+// (~3 degrees) before Grab calls it an object rather than an empty close.
+const grabMarginRad = 0.05
 
 // armRPC is the narrow slice of the arm.Arm gRPC client the gripper consumes.
 // Dependencies resolved via resource.Dependencies give us a gRPC client, not
-// the local *roarmM3 struct, so every controller interaction must round-trip
-// through DoCommand / IsMoving on that client.
+// the local *roarmM3 struct, so every joint-6 interaction round-trips through
+// DoCommand on that client (see gripper_bridge.go).
 type armRPC interface {
 	DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error)
-	IsMoving(ctx context.Context) (bool, error)
 }
 
 // RoArmGripperConfig configuration for the RoArm-M3 gripper.
@@ -67,11 +69,15 @@ type roarmM3Gripper struct {
 	armClient armRPC
 	model     referenceframe.Model
 	opMgr     *operation.SingleOperationManager
+	// sleep is the seam IsMoving's two-sample probe uses; tests make it
+	// instant. Production uses sleepCtx.
+	sleep func(context.Context, time.Duration) error
 
 	// State management
-	mu      sync.Mutex
-	holding atomic.Bool
-	closed  atomic.Bool
+	mu         sync.Mutex
+	holding    atomic.Bool
+	closed     atomic.Bool
+	opInFlight atomic.Bool
 }
 
 var errGripperClosed = stdlib_errors.New("gripper closed")
@@ -97,12 +103,18 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		return nil, fmt.Errorf("gripper %s: could not find arm %q in deps: %w", conf.ResourceName(), cfg.Arm, err)
 	}
 
+	model, err := buildGripperModel(conf.ResourceName().ShortName())
+	if err != nil {
+		return nil, fmt.Errorf("failed to build gripper kinematic model: %w", err)
+	}
+
 	g := &roarmM3Gripper{
 		name:      conf.ResourceName(),
 		logger:    logger,
 		armClient: armRes,
-		model:     referenceframe.NewSimpleModel("roarm_m3_gripper"),
+		model:     model,
 		opMgr:     operation.NewSingleOperationManager(),
+		sleep:     sleepCtx,
 	}
 
 	return g, nil
@@ -118,12 +130,16 @@ func (g *roarmM3Gripper) Status(ctx context.Context) (map[string]interface{}, er
 
 // setGripperRad commands joint 6 to a software-frame radian via the arm's
 // DoCommand bridge. See gripper_bridge.go for the protocol.
-func (g *roarmM3Gripper) setGripperRad(ctx context.Context, rad float64, speed, acc int) error {
+// The arm side settles on joint 6 before returning, so no sleep follows.
+func (g *roarmM3Gripper) setGripperRad(ctx context.Context, rad, speedDegs, accDegs float64) error {
+	g.opInFlight.Store(true)
+	defer g.opInFlight.Store(false)
 	_, err := g.armClient.DoCommand(ctx, map[string]interface{}{
 		"command": cmdSetGripperRad,
 		keyRad:    rad,
-		keySpeed:  float64(speed),
-		keyAcc:    float64(acc),
+		keySpeed:  speedDegs,
+		keyAcc:    accDegs,
+		keyWait:   true,
 	})
 	return err
 }
@@ -155,17 +171,10 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	if err := g.setGripperRad(ctx, gripperOpenRad, defaultGripperSpeed, defaultGripperAcc); err != nil {
+	if err := g.setGripperRad(ctx, gripperOpenRad, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err != nil {
 		return fmt.Errorf("failed to open gripper: %w", err)
 	}
 	g.holding.Store(false)
-
-	// Wait for movement to complete
-	select {
-	case <-time.After(1 * time.Second):
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 
 	g.logger.Debug("Gripper opened")
 	return nil
@@ -182,15 +191,8 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	if err := g.setGripperRad(ctx, gripperGrabRad, defaultGripperSpeed, defaultGripperAcc); err != nil {
+	if err := g.setGripperRad(ctx, gripperGrabRad, defaultGripperSpeedDegsPerSec, defaultGripperAccDegsPerSecSq); err != nil {
 		return false, fmt.Errorf("failed to grab with gripper: %w", err)
-	}
-
-	// Wait for movement to complete
-	select {
-	case <-time.After(1 * time.Second):
-	case <-ctx.Done():
-		return false, ctx.Err()
 	}
 
 	// Check if something was grabbed by reading the gripper position.
@@ -202,7 +204,7 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 		// Assume grab was successful if we can't read position
 		return true, nil
 	}
-	grabbed := gripperRad > gripperGrabRad+0.05 // ~3 degree margin
+	grabbed := gripperRad > gripperGrabRad+grabMarginRad
 
 	g.holding.Store(grabbed)
 
@@ -227,22 +229,42 @@ func (g *roarmM3Gripper) Stop(ctx context.Context, extra map[string]interface{})
 	return err
 }
 
-// IsMoving returns whether the gripper is currently moving
+// IsMoving reports whether joint 6 is moving, from two position reads a
+// probe gap apart. It never consults the arm's own IsMoving: the arm may be
+// swinging while the jaw is still.
 func (g *roarmM3Gripper) IsMoving(ctx context.Context) (bool, error) {
 	if g.closed.Load() {
 		return false, errGripperClosed
 	}
-	return g.armClient.IsMoving(ctx)
+	if g.opInFlight.Load() {
+		return true, nil
+	}
+	a, err := g.getGripperRad(ctx)
+	if err != nil {
+		return false, noFeedbackAsFalse(err)
+	}
+	if err := g.sleep(ctx, isMovingProbeGap); err != nil {
+		return false, err
+	}
+	b, err := g.getGripperRad(ctx)
+	if err != nil {
+		return false, noFeedbackAsFalse(err)
+	}
+	return math.Abs(a-b) > stallRad, nil
 }
 
-// ModelFrame returns the reference frame model for the gripper
-func (g *roarmM3Gripper) ModelFrame() referenceframe.Model {
-	return g.model
+// noFeedbackAsFalse maps the no-feedback bridge error (which arrives as
+// text after gRPC) to nil so IsMoving answers false, matching the arm.
+func noFeedbackAsFalse(err error) error {
+	if strings.Contains(err.Error(), noFeedbackMarker) {
+		return nil
+	}
+	return err
 }
 
 // Additional helper methods for gripper control
 
-// GetPosition returns the current gripper position in degrees (-10 to 100).
+// GetPosition returns the current gripper position in degrees.
 // Reads the 6th joint radian from the shared controller and converts.
 func (g *roarmM3Gripper) GetPosition(ctx context.Context) (float64, error) {
 	if g.closed.Load() {
@@ -255,14 +277,17 @@ func (g *roarmM3Gripper) GetPosition(ctx context.Context) (float64, error) {
 	return rad * 180.0 / math.Pi, nil
 }
 
-// SetPosition sets the gripper to a specific position (-10 to 100 degrees).
+// SetPosition sets the gripper to a specific position, in degrees within
+// joint 6's limits.
 // Internally this commands joint 6 directly via the arm's DoCommand bridge.
-func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, speed, acc int) error {
+func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees, speedDegs, accDegs float64) error {
 	if g.closed.Load() {
 		return errGripperClosed
 	}
-	if angleDegrees < -10 || angleDegrees > 100 {
-		return fmt.Errorf("gripper angle must be between -10 and 100 degrees, got %.1f", angleDegrees)
+	radians := angleDegrees * math.Pi / 180.0
+	if radians < gripperJointLimits[0] || radians > gripperJointLimits[1] {
+		return fmt.Errorf("gripper angle must be between %.1f and %.1f degrees, got %.1f",
+			gripperJointLimits[0]*180/math.Pi, gripperJointLimits[1]*180/math.Pi, angleDegrees)
 	}
 
 	g.mu.Lock()
@@ -271,26 +296,9 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees float64, 
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	radians := angleDegrees * math.Pi / 180.0
-	if err := g.setGripperRad(ctx, radians, speed, acc); err != nil {
+	if err := g.setGripperRad(ctx, radians, speedDegs, accDegs); err != nil {
 		return fmt.Errorf("failed to set gripper position: %w", err)
 	}
-
-	// Calculate wait time based on speed
-	moveTime := time.Duration(float64(time.Second) * 2000.0 / float64(speed))
-	if moveTime > 5*time.Second {
-		moveTime = 5 * time.Second
-	}
-	if moveTime < 100*time.Millisecond {
-		moveTime = 100 * time.Millisecond
-	}
-
-	select {
-	case <-time.After(moveTime):
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
 	return nil
 }
 
@@ -308,44 +316,18 @@ func (g *roarmM3Gripper) CurrentInputs(ctx context.Context) ([]referenceframe.In
 	if g.closed.Load() {
 		return nil, errGripperClosed
 	}
-	position, err := g.GetPosition(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert degrees to radians
-	radians := position * math.Pi / 180.0
-
-	return []referenceframe.Input{
-		radians,
-	}, nil
+	return []referenceframe.Input{}, nil
 }
 
 func (g *roarmM3Gripper) GoToInputs(ctx context.Context, inputs ...[]referenceframe.Input) error {
 	if g.closed.Load() {
 		return errGripperClosed
 	}
-	if len(inputs) == 0 {
-		return nil
-	}
-
 	for _, inputSet := range inputs {
-		if len(inputSet) != 1 {
-			return fmt.Errorf("expected 1 input for gripper, got %d", len(inputSet))
-		}
-
-		// Convert radians to degrees
-		degrees := inputSet[0] * 180.0 / math.Pi
-
-		if err := g.SetPosition(ctx, degrees, defaultGripperSpeed, defaultGripperAcc); err != nil {
-			return err
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if len(inputSet) != 0 {
+			return fmt.Errorf("the gripper model has no degrees of freedom; use the set_position DoCommand to move the jaw, got %d inputs", len(inputSet))
 		}
 	}
-
 	return nil
 }
 
@@ -369,13 +351,13 @@ func (g *roarmM3Gripper) DoCommand(ctx context.Context, cmd map[string]interface
 		if !ok {
 			return nil, fmt.Errorf("set_position command requires 'degrees' number parameter")
 		}
-		speed := 500
-		acc := 50
+		speed := defaultGripperSpeedDegsPerSec
+		acc := defaultGripperAccDegsPerSecSq
 		if s, ok := cmd["speed"].(float64); ok {
-			speed = int(s)
+			speed = s
 		}
 		if a, ok := cmd["acc"].(float64); ok {
-			acc = int(a)
+			acc = a
 		}
 		err := g.SetPosition(ctx, degrees, speed, acc)
 		return map[string]interface{}{"success": err == nil}, err
@@ -389,13 +371,11 @@ func (g *roarmM3Gripper) Geometries(ctx context.Context, _ map[string]interface{
 	if g.closed.Load() {
 		return nil, errGripperClosed
 	}
-	// ~70mm wide, 40mm tall, 60mm deep jaw envelope, offset 30mm beyond the wrist.
-	offset := spatialmath.NewPoseFromPoint(r3.Vector{X: 0, Y: 0, Z: 30})
-	box, err := spatialmath.NewBox(offset, r3.Vector{X: 70, Y: 40, Z: 60}, "gripper-box")
+	gif, err := g.model.Geometries([]referenceframe.Input{})
 	if err != nil {
 		return nil, err
 	}
-	return []spatialmath.Geometry{box}, nil
+	return gif.Geometries(), nil
 }
 
 func (g *roarmM3Gripper) IsHoldingSomething(ctx context.Context, _ map[string]interface{}) (gripper.HoldingStatus, error) {

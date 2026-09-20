@@ -1,8 +1,10 @@
 package waveshareroarm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +40,7 @@ func newHTTPTestController(t *testing.T, respT int, body FeedbackData) (*RoArmCo
 
 func TestCommandMarshalJSON_WithData(t *testing.T) {
 	cmd := &Command{
-		T: JOINT_RADIAN_CTRL,
+		T: cmdJointRadianCtrl,
 		Data: map[string]interface{}{
 			"joint": 1,
 			"rad":   0.5,
@@ -52,7 +54,7 @@ func TestCommandMarshalJSON_WithData(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatal(err)
 	}
-	if int(out["T"].(float64)) != JOINT_RADIAN_CTRL {
+	if int(out["T"].(float64)) != cmdJointRadianCtrl {
 		t.Fatal("T mismatch")
 	}
 	if int(out["joint"].(float64)) != 1 {
@@ -64,7 +66,7 @@ func TestCommandMarshalJSON_WithData(t *testing.T) {
 }
 
 func TestCommandMarshalJSON_EmptyData(t *testing.T) {
-	cmd := &Command{T: FEEDBACK_GET, Data: map[string]interface{}{}}
+	cmd := &Command{T: cmdFeedbackGet, Data: map[string]interface{}{}}
 	data, err := cmd.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
@@ -75,50 +77,6 @@ func TestCommandMarshalJSON_EmptyData(t *testing.T) {
 	}
 	if len(out) != 1 {
 		t.Fatalf("expected 1 key, got %v", out)
-	}
-}
-
-func TestParseLastJSONFrame_SingleComplete(t *testing.T) {
-	data, ok := parseLastJSONFrame([]byte("{\"T\":1051,\"b\":0}\r\n"))
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if string(data) != `{"T":1051,"b":0}` {
-		t.Fatalf("got %q", string(data))
-	}
-}
-
-func TestParseLastJSONFrame_PartialFrame(t *testing.T) {
-	_, ok := parseLastJSONFrame([]byte(`{"T":1051,"b":0}`)) // no \r\n
-	if ok {
-		t.Fatal("expected not ok")
-	}
-}
-
-func TestParseLastJSONFrame_MultipleFrames_UsesLast(t *testing.T) {
-	data, ok := parseLastJSONFrame([]byte("{\"T\":1}\r\n{\"T\":2}\r\n"))
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if string(data) != `{"T":2}` {
-		t.Fatalf("got %q", string(data))
-	}
-}
-
-func TestParseLastJSONFrame_GarbagePrefix(t *testing.T) {
-	data, ok := parseLastJSONFrame([]byte("GARBAGE{\"T\":1}\r\n"))
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if string(data) != `{"T":1}` {
-		t.Fatalf("got %q", string(data))
-	}
-}
-
-func TestParseLastJSONFrame_Empty(t *testing.T) {
-	_, ok := parseLastJSONFrame([]byte(""))
-	if ok {
-		t.Fatal("expected not ok")
 	}
 }
 
@@ -186,83 +144,6 @@ func TestExtractLastValidFeedback_Empty(t *testing.T) {
 	}
 }
 
-func TestAcceptableResponseTs_FeedbackGet(t *testing.T) {
-	accept := acceptableResponseTs(FEEDBACK_GET)
-	if accept == nil {
-		t.Fatal("expected non-nil for FEEDBACK_GET")
-	}
-	if !accept[1051] {
-		t.Fatal("expected 1051 accepted")
-	}
-	if !accept[FEEDBACK_GET] {
-		t.Fatal("expected FEEDBACK_GET accepted")
-	}
-	if accept[999] {
-		t.Fatal("999 should not be accepted")
-	}
-}
-
-func TestAcceptableResponseTs_UnknownCommand_AcceptsAll(t *testing.T) {
-	if acceptableResponseTs(999) != nil {
-		t.Fatal("expected nil (accept-any) for unknown command")
-	}
-}
-
-func TestKeysOf(t *testing.T) {
-	m := map[int]bool{1: true, 2: true, 3: true}
-	keys := keysOf(m)
-	if len(keys) != 3 {
-		t.Fatalf("expected 3 keys, got %d", len(keys))
-	}
-	// Just check membership; order isn't guaranteed by keysOf.
-	seen := map[int]bool{}
-	for _, k := range keys {
-		seen[k] = true
-	}
-	for want := range m {
-		if !seen[want] {
-			t.Fatalf("expected key %d in result", want)
-		}
-	}
-}
-
-func TestKeysOf_Empty(t *testing.T) {
-	keys := keysOf(map[int]bool{})
-	if len(keys) != 0 {
-		t.Fatalf("expected empty slice, got %v", keys)
-	}
-}
-
-func TestValidateSpeed_Range(t *testing.T) {
-	if err := ValidateSpeed(0); err == nil {
-		t.Fatal("expected error for 0")
-	}
-	if err := ValidateSpeed(1); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if err := ValidateSpeed(4096); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if err := ValidateSpeed(4097); err == nil {
-		t.Fatal("expected error for 4097")
-	}
-}
-
-func TestValidateAcceleration_Range(t *testing.T) {
-	if err := ValidateAcceleration(0); err == nil {
-		t.Fatal("expected error for 0")
-	}
-	if err := ValidateAcceleration(1); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if err := ValidateAcceleration(254); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if err := ValidateAcceleration(255); err == nil {
-		t.Fatal("expected error for 255")
-	}
-}
-
 func TestValidateLEDBrightness_Range(t *testing.T) {
 	if err := ValidateLEDBrightness(-1); err == nil {
 		t.Fatal("expected error for -1")
@@ -275,32 +156,6 @@ func TestValidateLEDBrightness_Range(t *testing.T) {
 	}
 	if err := ValidateLEDBrightness(256); err == nil {
 		t.Fatal("expected error for 256")
-	}
-}
-
-func TestEstimateMoveDeadline_Bounds(t *testing.T) {
-	now := time.Now()
-	// A very slow speed (lots of time per radian) should be clamped to 10s max.
-	d := estimateMoveDeadline(now, 1).Sub(now)
-	if d > 10*time.Second+1*time.Millisecond {
-		t.Fatalf("expected clamp <= 10s, got %v", d)
-	}
-	if d < 100*time.Millisecond {
-		t.Fatalf("expected >= 100ms, got %v", d)
-	}
-	// Very fast speed should be clamped to 100ms floor.
-	d2 := estimateMoveDeadline(now, 4096).Sub(now)
-	if d2 < 100*time.Millisecond {
-		t.Fatalf("expected 100ms floor, got %v", d2)
-	}
-}
-
-func TestEstimateMoveDeadline_DefendsAgainstZeroSpeed(t *testing.T) {
-	// Even with a speed that maps to zero deg/s, we should return a sane deadline.
-	now := time.Now()
-	d := estimateMoveDeadline(now, 0).Sub(now)
-	if d <= 0 {
-		t.Fatalf("expected positive duration, got %v", d)
 	}
 }
 
@@ -494,18 +349,6 @@ func TestHTTPSetJointRadian(t *testing.T) {
 	if err := c.SetJointRadian(context.Background(), 7, 0.5, 500, 50); err == nil {
 		t.Fatal("expected error for joint 7")
 	}
-	// speed out of range
-	if err := c.SetJointRadian(context.Background(), 1, 0.5, -1, 50); err == nil {
-		t.Fatal("expected error for bad speed")
-	}
-	// accel out of range
-	if err := c.SetJointRadian(context.Background(), 1, 0.5, 500, -1); err == nil {
-		t.Fatal("expected error for bad accel")
-	}
-	// radian out of range for joint 1
-	if err := c.SetJointRadian(context.Background(), 1, 100.0, 500, 50); err == nil {
-		t.Fatal("expected error for out-of-range radian")
-	}
 }
 
 func TestHTTPSetJointRadians(t *testing.T) {
@@ -519,36 +362,6 @@ func TestHTTPSetJointRadians(t *testing.T) {
 	// Wrong length
 	if err := c.SetJointRadians(context.Background(), []float64{0}, 500, 50); err == nil {
 		t.Fatal("expected error for wrong length")
-	}
-	// Out-of-range radian
-	if err := c.SetJointRadians(context.Background(), []float64{100, 0, 0, 0, 0, 0}, 500, 50); err == nil {
-		t.Fatal("expected error for out-of-range radian")
-	}
-	// Bad speed
-	if err := c.SetJointRadians(context.Background(), []float64{0, 0, 0, 0, 0, 0}, -1, 50); err == nil {
-		t.Fatal("expected error for bad speed")
-	}
-	// Bad accel
-	if err := c.SetJointRadians(context.Background(), []float64{0, 0, 0, 0, 0, 0}, 500, -1); err == nil {
-		t.Fatal("expected error for bad accel")
-	}
-}
-
-func TestHTTPMoveToHome(t *testing.T) {
-	c, srv := newHTTPTestController(t, 1051, FeedbackData{})
-	defer srv.Close()
-	defer c.Close(context.Background())
-	if err := c.MoveToHome(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestHTTPTestConnection(t *testing.T) {
-	c, srv := newHTTPTestController(t, 1051, FeedbackData{})
-	defer srv.Close()
-	defer c.Close(context.Background())
-	if err := c.TestConnection(context.Background()); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -569,20 +382,6 @@ func TestHTTPCommand_BadServer_ReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Fatalf("expected 500 in error, got: %v", err)
-	}
-}
-
-func TestHTTPCommand_UnexpectedResponseT_StillReturns(t *testing.T) {
-	// Controller logs a warning but returns the feedback even when T mismatches.
-	c, srv := newHTTPTestController(t, 99999, FeedbackData{B: 0.1})
-	defer srv.Close()
-	defer c.Close(context.Background())
-	fb, err := c.GetFeedback(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if fb.B != 0.1 {
-		t.Fatalf("expected feedback to return, got %+v", fb)
 	}
 }
 
@@ -623,10 +422,11 @@ func TestHTTPCommand_BadJSON_ReturnsError(t *testing.T) {
 	}
 }
 
-// fakeSerialPort implements serial.Port for testing sendSerialCommand.
+// fakeSerialPort implements serial.Port for testing the serial transport.
 type fakeSerialPort struct {
 	written  []byte
 	toRead   []byte
+	frames   [][]byte // popped one per ResetInputBuffer (i.e. per query)
 	readErr  error
 	readPos  int
 	closed   bool
@@ -651,8 +451,14 @@ func (p *fakeSerialPort) Write(b []byte) (int, error) {
 	p.written = append(p.written, b...)
 	return len(b), nil
 }
-func (p *fakeSerialPort) Drain() error             { return nil }
-func (p *fakeSerialPort) ResetInputBuffer() error  { p.resetIn++; return nil }
+func (p *fakeSerialPort) Drain() error { return nil }
+func (p *fakeSerialPort) ResetInputBuffer() error {
+	p.resetIn++
+	if len(p.frames) > 0 {
+		p.toRead, p.frames, p.readPos = p.frames[0], p.frames[1:], 0
+	}
+	return nil
+}
 func (p *fakeSerialPort) ResetOutputBuffer() error { p.resetOut++; return nil }
 func (p *fakeSerialPort) SetDTR(v bool) error      { return nil }
 func (p *fakeSerialPort) SetRTS(v bool) error      { return nil }
@@ -666,12 +472,12 @@ func (p *fakeSerialPort) Break(d time.Duration) error          { return nil }
 func newSerialTestController(t *testing.T, port *fakeSerialPort) *RoArmController {
 	t.Helper()
 	return &RoArmController{
-		serialPort:    port,
-		isHTTP:        false,
-		serialTimeout: 500 * time.Millisecond,
-		httpTimeout:   DefaultHTTPTimeout,
-		logger:        logging.NewTestLogger(t),
-		tracker:       newMotionTracker(),
+		serialPort:      port,
+		isHTTP:          false,
+		serialTimeout:   500 * time.Millisecond,
+		httpTimeout:     DefaultHTTPTimeout,
+		logger:          logging.NewTestLogger(t),
+		canReadFeedback: true,
 	}
 }
 
@@ -765,28 +571,8 @@ func TestRoArmControllerClose_HTTPMode(t *testing.T) {
 	}
 }
 
-func TestRoArmControllerIsMoving_Default(t *testing.T) {
-	c, err := NewRoArmController(&RoArmConfig{Host: "1.2.3.4"})
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	moving, err := c.IsMoving(nil)
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if moving {
-		t.Fatal("expected not moving before any recordMove")
-	}
-	c.NoteMotionDeadline(time.Now().Add(200 * time.Millisecond))
-	moving, _ = c.IsMoving(nil)
-	if !moving {
-		t.Fatal("expected moving after NoteMotionDeadline")
-	}
-	_ = c.Close(nil)
-}
-
 func TestCommandMarshalJSON_NilData(t *testing.T) {
-	cmd := &Command{T: FEEDBACK_GET}
+	cmd := &Command{T: cmdFeedbackGet}
 	data, err := cmd.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
@@ -800,25 +586,101 @@ func TestCommandMarshalJSON_NilData(t *testing.T) {
 	}
 }
 
-func TestMotionTrackerIsMovingBeforeDeadline(t *testing.T) {
-	tr := newMotionTracker()
-	tr.recordMove(time.Now().Add(200 * time.Millisecond))
-	if !tr.isMoving(time.Now()) {
-		t.Fatal("expected moving before deadline")
+// A control command must return as soon as it is written, even when the
+// firmware never answers (echo off). Before Task 4 this timed out.
+func TestSerialWrite_ReturnsWithoutAResponse(t *testing.T) {
+	port := &fakeSerialPort{} // nothing will ever be readable
+	c := newSerialTestController(t, port)
+	start := time.Now()
+	if err := c.SetTorque(context.Background(), true); err != nil {
+		t.Fatalf("SetTorque: %v", err)
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatalf("SetTorque waited for a response: %v", time.Since(start))
+	}
+	if !bytes.Contains(port.written, []byte(`"T":210`)) {
+		t.Fatalf("command not written: %q", port.written)
 	}
 }
 
-func TestMotionTrackerNotMovingAfterDeadline(t *testing.T) {
-	tr := newMotionTracker()
-	tr.recordMove(time.Now().Add(-10 * time.Millisecond))
-	if tr.isMoving(time.Now()) {
-		t.Fatal("expected not moving after deadline")
+// Feedback still waits for, and filters to, a T:1051 frame.
+func TestSerialQuery_DropsEchoAndReturnsFeedback(t *testing.T) {
+	port := &fakeSerialPort{
+		toRead: []byte("{\"T\":102,\"base\":0}\r\n{\"T\":1051,\"b\":0.25}\r\n"),
+	}
+	c := newSerialTestController(t, port)
+	fb, err := c.GetFeedback(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fb.B != 0.25 {
+		t.Fatalf("expected the 1051 frame, got %+v", fb)
 	}
 }
 
-func TestMotionTrackerNotMovingBeforeFirstRecord(t *testing.T) {
-	tr := newMotionTracker()
-	if tr.isMoving(time.Now()) {
-		t.Fatal("expected not moving before any recordMove call")
+// HTTP control commands ignore the body entirely.
+func TestHTTPWrite_IgnoresBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not json at all"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c, err := NewRoArmController(&RoArmConfig{Host: u.Host})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetLED(context.Background(), 10); err != nil {
+		t.Fatalf("write should not parse the body: %v", err)
+	}
+}
+
+// HTTP feedback must be a 1051 frame; anything else is an error naming HTTP.
+func TestHTTPQuery_RejectsNonFeedbackBody(t *testing.T) {
+	c, srv := newHTTPTestController(t, 99999, FeedbackData{B: 0.1})
+	defer srv.Close()
+	_, err := c.GetFeedback(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "HTTP") {
+		t.Fatalf("expected an HTTP-naming error, got %v", err)
+	}
+}
+
+func TestControllerIsMoving_ComparesTwoFeedbackFrames(t *testing.T) {
+	moving := &fakeSerialPort{frames: [][]byte{
+		[]byte("{\"T\":1051,\"b\":0.10}\r\n"),
+		[]byte("{\"T\":1051,\"b\":0.30}\r\n"),
+	}}
+	c := newSerialTestController(t, moving)
+	got, err := c.IsMoving(context.Background())
+	if err != nil || !got {
+		t.Fatalf("expected moving, got %v err=%v", got, err)
+	}
+	still := &fakeSerialPort{frames: [][]byte{
+		[]byte("{\"T\":1051,\"b\":0.10}\r\n"),
+		[]byte("{\"T\":1051,\"b\":0.101}\r\n"),
+	}}
+	c = newSerialTestController(t, still)
+	got, err = c.IsMoving(context.Background())
+	if err != nil || got {
+		t.Fatalf("expected still, got %v err=%v", got, err)
+	}
+}
+
+func TestControllerNoFeedback_Fallbacks(t *testing.T) {
+	c := newSerialTestController(t, &fakeSerialPort{})
+	c.canReadFeedback = false
+	if _, err := c.GetJointRadians(context.Background()); !errors.Is(err, errNoFeedback) {
+		t.Fatalf("expected errNoFeedback, got %v", err)
+	}
+	moving, err := c.IsMoving(context.Background())
+	if err != nil || moving {
+		t.Fatalf("expected false, nil; got %v %v", moving, err)
+	}
+	start := time.Now()
+	pos, err := c.WaitUntilSettled(context.Background(), []float64{0, 0, 0, 0, 0, 0}, armMask, 200*time.Millisecond)
+	if err != nil || pos != nil {
+		t.Fatalf("expected nil, nil; got %v %v", pos, err)
+	}
+	if time.Since(start) < 90*time.Millisecond {
+		t.Fatal("expected the plain time estimate to be slept")
 	}
 }

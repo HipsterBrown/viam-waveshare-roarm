@@ -25,42 +25,23 @@ import (
 // the same function converts either direction.
 func gripperSoftwareToWire(r float64) float64 { return math.Pi - r }
 
+// Firmware command types (the "T" field). Only the ones this module sends.
 const (
-	// Command types matching the Python SDK
-	ECHO_SET                     = 605
-	MIDDLE_SET                   = 502
-	LED_CTRL                     = 114
-	TORQUE_SET                   = 210
-	DYNAMIC_ADAPTATION_SET       = 112
-	FEEDBACK_GET                 = 105
-	JOINT_RADIAN_CTRL            = 101
-	JOINTS_RADIAN_CTRL           = 102
-	JOINT_ANGLE_CTRL             = 121
-	JOINTS_ANGLE_CTRL            = 122
-	GRIPPER_MODE_SET             = 222
-	POSE_CTRL                    = 1041
-	WIFI_ON_BOOT                 = 401
-	AP_SET                       = 402
-	STA_SET                      = 403
-	APSTA_SET                    = 404
-	WIFI_CONFIG_CREATE_BY_STATUS = 406
-	WIFI_CONFIG_CREATE_BY_INPUT  = 407
-	WIFI_STOP                    = 408
+	cmdFeedbackGet      = 105 // answered with a T:1051 frame
+	cmdJointRadianCtrl  = 101 // one joint: joint, rad, spd, acc
+	cmdJointsRadianCtrl = 102 // all joints: base..hand, spd, acc
+	cmdLEDCtrl          = 114
+	cmdTorqueSet        = 210
+	feedbackFrameT      = 1051
 
 	// Default timeouts
 	DefaultHTTPTimeout   = 5 * time.Second
 	DefaultSerialTimeout = 1 * time.Second
 )
 
-// Joint limits for RoArm-M3 (in radians) - from waveshare_roarm_sdk utils.py
-var RoArmM3JointLimits = [][2]float64{
-	{-3.3, 3.3}, // Joint 1: ±189° (wider than ±180°)
-	{-1.9, 1.9}, // Joint 2: ±109° (wider than ±90°)
-	{-1.2, 3.3}, // Joint 3: -69° to 189°
-	{-1.9, 1.9}, // Joint 4: ±109° (wider than ±90°)
-	{-3.3, 3.3}, // Joint 5: ±189° (wider than ±180°)
-	{-0.2, 1.9}, // Joint 6: -11° to 109° (gripper)
-}
+// gripperJointLimits is joint 6's software-frame range in radians (about
+// -11.5 to 109 degrees). Joints 1-5 take their limits from roarm_m3.json.
+var gripperJointLimits = [2]float64{-0.2, 1.9}
 
 // Command represents a JSON command to send to the RoArm
 type Command struct {
@@ -111,8 +92,10 @@ type RoArmController struct {
 	isHTTP        bool
 	httpTimeout   time.Duration
 	serialTimeout time.Duration
-	tracker       *motionTracker
 	verboseWire   bool
+	// canReadFeedback is true when this transport can answer a T:105
+	// feedback request. Serial always can; HTTP depends on the firmware.
+	canReadFeedback bool
 }
 
 // RoArmConfig represents the configuration for the RoArm controller
@@ -136,7 +119,6 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 		httpTimeout:   DefaultHTTPTimeout,
 		serialTimeout: DefaultSerialTimeout,
 		logger:        config.Logger,
-		tracker:       newMotionTracker(),
 		verboseWire:   os.Getenv("ROARM_WIRE_TRACE") == "1",
 	}
 
@@ -156,6 +138,7 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 	if config.Host != "" {
 		// HTTP mode
 		controller.isHTTP = true
+		controller.canReadFeedback = httpSupportsFeedback
 		controller.httpHost = config.Host
 		controller.httpClient = &http.Client{
 			Timeout: controller.httpTimeout,
@@ -163,6 +146,7 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 	} else if config.Port != "" {
 		// Serial mode
 		controller.isHTTP = false
+		controller.canReadFeedback = true
 		baudrate := config.Baudrate
 		if baudrate == 0 {
 			baudrate = 115200 // Default baudrate
@@ -205,23 +189,6 @@ func (c *RoArmController) Close(ctx context.Context) error {
 	return nil
 }
 
-// parseLastJSONFrame finds the last complete JSON frame in buf, delimited
-// by '{' and "}\r\n". Returns the JSON bytes (including the closing brace)
-// and true if a complete frame is present.
-func parseLastJSONFrame(buf []byte) (jsonData []byte, ok bool) {
-	frameStart := []byte("{")
-	frameEnd := []byte("}\r\n")
-	endIndex := bytes.LastIndex(buf, frameEnd)
-	if endIndex < 0 {
-		return nil, false
-	}
-	startIndex := bytes.LastIndex(buf[:endIndex], frameStart)
-	if startIndex < 0 || startIndex >= endIndex {
-		return nil, false
-	}
-	return buf[startIndex : endIndex+1], true
-}
-
 // extractLastValidFeedback walks `}\r\n`-delimited frames in buf from most
 // recent to oldest, attempting to parse each as FeedbackData. The firmware
 // occasionally emits torn output — e.g. two partial frames concatenated
@@ -260,139 +227,112 @@ func extractLastValidFeedback(buf []byte) (*FeedbackData, []byte, bool) {
 	return nil, nil, false
 }
 
-// acceptableResponseTs returns the set of response T values the firmware
-// is expected to send in reply to a given request T. A nil result means
-// accept any frame (fallback for commands whose response shape we don't
-// yet have documented).
-func acceptableResponseTs(requestT int) map[int]bool {
-	switch requestT {
-	case FEEDBACK_GET:
-		return map[int]bool{1051: true, FEEDBACK_GET: true}
-	default:
-		return nil
-	}
-}
+// feedbackResponseTs are the frame types the firmware sends in reply to a
+// cmdFeedbackGet. Nothing else is ever waited for (see write vs query).
+var feedbackResponseTs = map[int]bool{feedbackFrameT: true, cmdFeedbackGet: true}
 
-// keysOf returns the sorted keys of a map[int]bool for logging purposes.
-func keysOf(m map[int]bool) []int {
-	keys := make([]int, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
+// httpSupportsFeedback records whether this firmware's /js endpoint returns a
+// T:1051 body for a T:105 request. Bench task B9 decides it. When false the
+// controller runs in HTTP mode with canReadFeedback=false (see settle.go).
+const httpSupportsFeedback = true
 
-// motionTracker records when the controller expects an in-flight motion
-// to complete. IsMoving reads this deadline to tell callers whether the
-// arm is still moving without requiring a round-trip to hardware.
-type motionTracker struct {
-	mu       sync.Mutex
-	deadline time.Time
-}
+// errNoFeedback is returned by every position read on a transport that
+// cannot return feedback. Its message contains noFeedbackMarker so the
+// gripper can recognise it after it has crossed the DoCommand boundary.
+var errNoFeedback = errors.New(noFeedbackMarker + "; position reads need a serial connection")
 
-func newMotionTracker() *motionTracker { return &motionTracker{} }
-
-func (m *motionTracker) recordMove(deadline time.Time) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.deadline = deadline
-}
-
-func (m *motionTracker) isMoving(now time.Time) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return now.Before(m.deadline)
-}
-
-// sendCommand sends a command to the RoArm and returns the response
-func (c *RoArmController) sendCommand(ctx context.Context, cmd *Command) (*FeedbackData, error) {
+// write sends a control command and returns once it is on the wire. The
+// firmware never answers these (only FEEDBACK_GET gets a reply), so waiting
+// would only ever time out or mistake a command echo for an answer.
+func (c *RoArmController) write(ctx context.Context, cmd *Command) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	cmdBytes, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to marshal command: %w", err)
+	}
+	if c.isHTTP {
+		_, err := c.httpGet(ctx, cmdBytes)
+		return err
+	}
+	return c.serialWrite(cmdBytes)
+}
+
+// query sends FEEDBACK_GET and waits for the T:1051 frame that answers it.
+func (c *RoArmController) query(ctx context.Context) (*FeedbackData, error) {
+	if !c.canReadFeedback {
+		return nil, errNoFeedback
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cmdBytes, err := json.Marshal(&Command{T: cmdFeedbackGet, Data: map[string]interface{}{}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal command: %w", err)
 	}
-
 	if c.isHTTP {
-		return c.sendHTTPCommand(ctx, cmdBytes, cmd.T)
+		body, err := c.httpGet(ctx, cmdBytes)
+		if err != nil {
+			return nil, err
+		}
+		var fb FeedbackData
+		if err := json.Unmarshal(body, &fb); err != nil || !feedbackResponseTs[fb.T] {
+			return nil, fmt.Errorf("HTTP transport did not return a feedback frame (T=%d, body %q); this firmware may not support feedback over HTTP", fb.T, string(body))
+		}
+		return &fb, nil
 	}
-	return c.sendSerialCommand(ctx, cmdBytes, cmd.T)
+	if err := c.serialWrite(cmdBytes); err != nil {
+		return nil, err
+	}
+	return c.serialReadFeedback(ctx)
 }
 
-// sendHTTPCommand sends a command via HTTP
-func (c *RoArmController) sendHTTPCommand(ctx context.Context, cmdBytes []byte, requestT int) (*FeedbackData, error) {
-	// URL encode the JSON command
-	encodedCmd := url.QueryEscape(string(cmdBytes))
-	requestURL := fmt.Sprintf("http://%s/js?json=%s", c.httpHost, encodedCmd)
-
-	// Create request with context derived from caller's ctx for timeout
+// httpGet performs the /js?json= request and returns the raw body.
+func (c *RoArmController) httpGet(ctx context.Context, cmdBytes []byte) ([]byte, error) {
+	requestURL := fmt.Sprintf("http://%s/js?json=%s", c.httpHost, url.QueryEscape(string(cmdBytes)))
 	reqCtx, cancel := context.WithTimeout(ctx, c.httpTimeout)
 	defer cancel()
-
 	req, err := http.NewRequestWithContext(reqCtx, "GET", requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
-
-	// Set appropriate headers
 	req.Header.Set("User-Agent", "roarm-go-client/1.0")
 	req.Header.Set("Accept", "application/json")
-
-	c.logger.Debugf("Sending HTTP request: %s", requestURL)
-
+	if c.verboseWire {
+		c.logger.Debugf("HTTP GET %s", requestURL)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-
-	c.logger.Debugf("Received HTTP response: %s", string(body))
-
-	var feedback FeedbackData
-	if err := json.Unmarshal(body, &feedback); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w, body: %s", err, string(body))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP request failed with status %d: %s", resp.StatusCode, string(body))
 	}
-
-	if accept := acceptableResponseTs(requestT); accept != nil && !accept[feedback.T] {
-		c.logger.Warnf("HTTP response T=%d did not match expected %v for request T=%d (returning anyway)",
-			feedback.T, keysOf(accept), requestT)
-	}
-
-	return &feedback, nil
+	return body, nil
 }
 
-// sendSerialCommand sends a command via serial port
-func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte, requestT int) (*FeedbackData, error) {
-	// Add newline to command
+// serialWrite flushes stale input, then writes one newline-terminated frame.
+func (c *RoArmController) serialWrite(cmdBytes []byte) error {
 	cmdBytes = append(cmdBytes, '\n')
-
 	if c.verboseWire {
 		c.logger.Debugf("Sending serial command: %s", string(cmdBytes))
 	}
-
-	// Flush any stale firmware feedback sitting in the input buffer so that
-	// earlier streaming frames aren't parsed as this command's response.
 	if err := c.serialPort.ResetInputBuffer(); err != nil {
 		c.logger.Warnf("ResetInputBuffer failed: %v", err)
 	}
-
-	// Write command
-	_, err := c.serialPort.Write(cmdBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write to serial port: %w", err)
+	if _, err := c.serialPort.Write(cmdBytes); err != nil {
+		return fmt.Errorf("failed to write to serial port: %w", err)
 	}
+	return nil
+}
 
+// serialReadFeedback reads until a T:1051 feedback frame arrives, dropping
+// stale or echoed frames, or until the read times out or ctx is cancelled.
+func (c *RoArmController) serialReadFeedback(ctx context.Context) (*FeedbackData, error) {
 	// Read response with proper frame detection (based on Python ReadLine class)
 	buffer := make([]byte, 256)
 	responseBuffer := bytes.Buffer{}
@@ -462,10 +402,8 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 		// Only accept response frames whose T matches what the firmware
 		// is expected to send for this request T. Stale streaming frames
 		// (e.g. unsolicited 1051 feedback) are dropped and we keep reading.
-		accept := acceptableResponseTs(requestT)
-		if accept != nil && !accept[feedback.T] {
-			c.logger.Warnf("dropping stale/unexpected response frame T=%d (wanted one of %v)",
-				feedback.T, keysOf(accept))
+		if !feedbackResponseTs[feedback.T] {
+			c.logger.Warnf("dropping stale/unexpected frame T=%d while waiting for feedback", feedback.T)
 			responseBuffer.Reset()
 			continue
 		}
@@ -474,43 +412,44 @@ func (c *RoArmController) sendSerialCommand(ctx context.Context, cmdBytes []byte
 	}
 }
 
-// IsMoving returns true if the controller believes a motion is still in flight
-// (i.e. the estimated completion deadline hasn't passed).
+// WaitUntilSettled blocks until the masked joints reach target or stop
+// moving. See settle.go. On a transport that cannot read feedback it sleeps
+// the plain time estimate (half the timeout) and returns nil positions.
+func (c *RoArmController) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
+	if !c.canReadFeedback {
+		return nil, sleepCtx(ctx, timeout/2)
+	}
+	pos, stalled, err := waitUntilSettled(ctx, c.GetJointRadians, sleepCtx, target, mask, timeout)
+	if stalled {
+		c.logger.Debugf("settle: joints stopped short of target (at %v, wanted %v)", pos, target)
+	}
+	return pos, err
+}
+
+// IsMoving compares two position samples isMovingProbeGap apart. On a
+// transport that cannot read feedback it reports false.
 func (c *RoArmController) IsMoving(ctx context.Context) (bool, error) {
-	return c.tracker.isMoving(time.Now()), nil
-}
-
-// NoteMotionDeadline records that a motion is expected to complete no later
-// than the given time. Called by higher-level resources that have better
-// information about motion duration than the controller.
-func (c *RoArmController) NoteMotionDeadline(deadline time.Time) {
-	c.tracker.recordMove(deadline)
-}
-
-// estimateMoveDeadline returns a conservative upper-bound deadline for a move
-// at the given firmware speed, used when the caller does not supply a better
-// estimate via NoteMotionDeadline.
-func estimateMoveDeadline(now time.Time, speed int) time.Time {
-	speedDegPerSec := speedFromUnits(speed)
-	radPerSec := speedDegPerSec * math.Pi / 180.0
-	if radPerSec <= 0 {
-		radPerSec = 1 // defensive
+	if !c.canReadFeedback {
+		return false, nil
 	}
-	const worstCaseRad = 2 * math.Pi
-	estimated := time.Duration(worstCaseRad/radPerSec) * time.Second
-	if estimated < 100*time.Millisecond {
-		estimated = 100 * time.Millisecond
+	a, err := c.GetJointRadians(ctx)
+	if err != nil {
+		return false, err
 	}
-	if estimated > 10*time.Second {
-		estimated = 10 * time.Second
+	if err := sleepCtx(ctx, isMovingProbeGap); err != nil {
+		return false, err
 	}
-	return now.Add(estimated)
+	b, err := c.GetJointRadians(ctx)
+	if err != nil {
+		return false, err
+	}
+	return maxTravel(a, b, nil) > stallRad, nil
 }
 
 // SetTorque enables or disables torque for all joints
 func (c *RoArmController) SetTorque(ctx context.Context, enable bool) error {
 	cmd := &Command{
-		T: TORQUE_SET,
+		T: cmdTorqueSet,
 		Data: map[string]interface{}{
 			"cmd": 0,
 		},
@@ -519,8 +458,7 @@ func (c *RoArmController) SetTorque(ctx context.Context, enable bool) error {
 		cmd.Data["cmd"] = 1
 	}
 
-	_, err := c.sendCommand(ctx, cmd)
-	return err
+	return c.write(ctx, cmd)
 }
 
 // SetLED controls the LED brightness (0-255)
@@ -530,21 +468,13 @@ func (c *RoArmController) SetLED(ctx context.Context, brightness int) error {
 	}
 
 	cmd := &Command{
-		T: LED_CTRL,
+		T: cmdLEDCtrl,
 		Data: map[string]interface{}{
 			"led": brightness,
 		},
 	}
 
-	_, err := c.sendCommand(ctx, cmd)
-	return err
-}
-
-// MoveToHome moves the arm to the home position
-func (c *RoArmController) MoveToHome(ctx context.Context) error {
-	// Home position: all joints at 0 except joint 3 at 90 degrees
-	homePositions := []float64{0, 0, math.Pi / 2, 0, 0, 0}
-	return c.SetJointRadians(ctx, homePositions, 100, 50)
+	return c.write(ctx, cmd)
 }
 
 // SetJointRadian moves a single joint to the specified radian position
@@ -553,28 +483,13 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 		return fmt.Errorf("joint must be 1-6, got %d", joint)
 	}
 
-	// Validate speed and acceleration
-	if err := ValidateSpeed(speed); err != nil {
-		return err
-	}
-	if err := ValidateAcceleration(acc); err != nil {
-		return err
-	}
-
-	// Validate joint limits
-	limits := RoArmM3JointLimits[joint-1]
-	if radian < limits[0] || radian > limits[1] {
-		return fmt.Errorf("joint %d radian %.3f out of range [%.3f, %.3f]",
-			joint, radian, limits[0], limits[1])
-	}
-
 	wireRadian := radian
 	if joint == 6 {
 		wireRadian = gripperSoftwareToWire(radian)
 	}
 
 	cmd := &Command{
-		T: JOINT_RADIAN_CTRL,
+		T: cmdJointRadianCtrl,
 		Data: map[string]interface{}{
 			"joint": joint,
 			"rad":   wireRadian,
@@ -583,13 +498,10 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 		},
 	}
 
-	if _, err := c.sendCommand(ctx, cmd); err != nil {
+	if err := c.write(ctx, cmd); err != nil {
 		return err
 	}
 
-	// Record a conservative fallback deadline. Callers with better
-	// information should call NoteMotionDeadline to refine it.
-	c.tracker.recordMove(estimateMoveDeadline(time.Now(), speed))
 	return nil
 }
 
@@ -599,25 +511,8 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 		return fmt.Errorf("expected 6 joint positions, got %d", len(radians))
 	}
 
-	// Validate speed and acceleration parameters
-	if err := ValidateSpeed(speed); err != nil {
-		return err
-	}
-	if err := ValidateAcceleration(acc); err != nil {
-		return err
-	}
-
-	// Validate all joint limits
-	for i, radian := range radians {
-		limits := RoArmM3JointLimits[i]
-		if radian < limits[0] || radian > limits[1] {
-			return fmt.Errorf("joint %d radian %.3f out of range [%.3f, %.3f]",
-				i+1, radian, limits[0], limits[1])
-		}
-	}
-
 	cmd := &Command{
-		T: JOINTS_RADIAN_CTRL,
+		T: cmdJointsRadianCtrl,
 		Data: map[string]interface{}{
 			"base":     radians[0],
 			"shoulder": radians[1],
@@ -630,35 +525,27 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 		},
 	}
 
-	if _, err := c.sendCommand(ctx, cmd); err != nil {
+	if err := c.write(ctx, cmd); err != nil {
 		return err
 	}
 
-	// Record a conservative fallback deadline. Callers with better
-	// information should call NoteMotionDeadline to refine it.
-	c.tracker.recordMove(estimateMoveDeadline(time.Now(), speed))
 	return nil
 }
 
 // GetJointRadians returns the current joint positions in radians
 func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error) {
-	cmd := &Command{
-		T:    FEEDBACK_GET,
-		Data: map[string]interface{}{},
-	}
-
-	feedback, err := c.sendCommand(ctx, cmd)
+	feedback, err := c.query(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	radians := []float64{
-		feedback.B,                          // Joint 1
-		feedback.S,                          // Joint 2
-		feedback.E,                          // Joint 3
-		feedback.Wrist,                      // Joint 4
-		feedback.R,                          // Joint 5
-		gripperSoftwareToWire(feedback.G),   // Joint 6 (gripper)
+		feedback.B,                        // Joint 1
+		feedback.S,                        // Joint 2
+		feedback.E,                        // Joint 3
+		feedback.Wrist,                    // Joint 4
+		feedback.R,                        // Joint 5
+		gripperSoftwareToWire(feedback.G), // Joint 6 (gripper)
 	}
 
 	return radians, nil
@@ -666,28 +553,7 @@ func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error
 
 // GetFeedback returns the full feedback data from the arm
 func (c *RoArmController) GetFeedback(ctx context.Context) (*FeedbackData, error) {
-	cmd := &Command{
-		T:    FEEDBACK_GET,
-		Data: map[string]interface{}{},
-	}
-
-	return c.sendCommand(ctx, cmd)
-}
-
-// ValidateSpeed validates speed parameter (1-4096 as per SDK)
-func ValidateSpeed(speed int) error {
-	if speed < 1 || speed > 4096 {
-		return fmt.Errorf("speed must be between 1 and 4096, got %d", speed)
-	}
-	return nil
-}
-
-// ValidateAcceleration validates acceleration parameter (1-254 as per SDK)
-func ValidateAcceleration(acc int) error {
-	if acc < 1 || acc > 254 {
-		return fmt.Errorf("acceleration must be between 1 and 254, got %d", acc)
-	}
-	return nil
+	return c.query(ctx)
 }
 
 // ValidateLEDBrightness validates LED brightness parameter (0-255)
@@ -695,18 +561,5 @@ func ValidateLEDBrightness(brightness int) error {
 	if brightness < 0 || brightness > 255 {
 		return fmt.Errorf("LED brightness must be between 0 and 255, got %d", brightness)
 	}
-	return nil
-}
-
-// TestConnection tests the connection by sending a feedback request
-func (c *RoArmController) TestConnection(ctx context.Context) error {
-	c.logger.Debug("Testing connection...")
-
-	_, err := c.GetFeedback(ctx)
-	if err != nil {
-		return fmt.Errorf("connection test failed: %w", err)
-	}
-
-	c.logger.Debug("Connection test successful")
 	return nil
 }

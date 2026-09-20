@@ -28,3 +28,7 @@ go.work.sum
 # Build outputs
 bin
 *tar.gz
+
+# Viam module generator metadata and local planning docs
+.viam-gen-info
+docs/superpowers/

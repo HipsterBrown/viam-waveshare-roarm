@@ -48,10 +48,14 @@ The following attributes are available for the arm component:
 | `baudrate`                          | int              | Optional     | The baud rate for serial communication. Default is `115200`.                                                  |
 | `http_timeout`                      | duration         | Optional     | HTTP communication timeout. Accepts a duration string (e.g. `"5s"`) or integer nanoseconds. Default is `5s`.  |
 | `serial_timeout`                    | duration         | Optional     | Serial communication timeout. Accepts a duration string (e.g. `"1s"`) or integer nanoseconds. Default is `1s`.|
-| `speed_degs_per_sec`                | float32          | Optional     | The rotational speed for arm movements (must be between 3 and 180). Default is `50` degrees/second.           |
-| `acceleration_degs_per_sec_per_sec` | float32          | Optional     | The acceleration for arm movements (must be between 10 and 500). Default is `100` degrees/second^2.           |
+| `speed_degs_per_sec`                | float32          | Optional     | The rotational speed for arm movements (must be between 3 and 180). Default is `50` degrees/second. Validated at config time.  |
+| `acceleration_degs_per_sec_per_sec` | float32          | Optional     | The acceleration for arm movements (must be between 10 and 500). Default is `100` degrees/second^2. Validated at config time.  |
 
 *Either `host` or `port` must be specified, but not both.
+
+> **Motion completion.** Every move returns once the firmware's position feedback shows the joints within about 1 degree of the target, or stopped moving (an obstacle), rather than after a computed delay. `IsMoving` compares two feedback samples 40 ms apart and reports true while a move call is in flight.
+>
+> **Streaming trajectories.** `MoveThroughJointPositionsStreamed` (viam-server 1.1.0 or newer) writes each trajectory point on the producer's schedule, at a per-segment speed that covers the segment's travel in its time slot. If the arm starts more than 5 degrees from the first point, one ordinary move closes the gap before the clock starts. Late points are written, not dropped; `Constraints` are ignored. One log line per stream reports gate, late, settle, and wall time.
 
 ### Communication Methods
 
@@ -81,6 +85,8 @@ For wireless control over WiFi:
   "acceleration_degs_per_sec_per_sec": 100
 }
 ```
+
+Position feedback over HTTP was verified on the bench (a T:105 request to `/js?json=` returns a T:1051 frame), so HTTP mode supports position reads, settle detection, and `IsMoving`. Serial is still recommended for streamed trajectories: each point is one HTTP round trip over the arm's WiFi.
 
 
 ### DoCommand
@@ -167,11 +173,11 @@ The following commands exist to let the companion gripper component
 control joint 6 through this arm. They are not intended for direct user
 use, but are documented here for completeness:
 
-| Command             | Params                                     | Returns                             | Notes                                                                 |
-|---------------------|--------------------------------------------|-------------------------------------|-----------------------------------------------------------------------|
-| `get_gripper_rad`   | —                                          | `{"rad": <float>}`                  | Current joint-6 position in software-frame radians.                   |
-| `set_gripper_rad`   | `{"rad": <float>, "speed"?, "acc"?}`       | `{"success": true}`                 | Commands joint 6 to `rad` (software frame). Applies the firmware π-radian transform internally. |
-| `stop_gripper`      | —                                          | `{"success": true}`                 | Soft-hold: re-sends the current joint-6 position as the target.       |
+| Command | Params | Returns | Notes |
+|---|---|---|---|
+| `get_gripper_rad` | — | `{"rad": <float>}` | Current joint-6 position, software frame. |
+| `set_gripper_rad` | `{"rad": <float>, "speed"?: deg/s, "acc"?: deg/s², "wait"?: bool}` | `{"success": true}` | Commands joint 6. `wait` (default `true`) blocks until the jaw settles. Rejects `rad` outside `[-0.2, 1.9]`. |
+| `stop_gripper` | — | `{"success": true}` | Soft-hold: re-sends the current joint-6 position at 10 deg/s. |
 
 
 ## Model hipsterbrown:waveshare-roarm:gripper
@@ -214,7 +220,7 @@ Get the current gripper position in degrees:
 ```
 
 #### Set Gripper Position
-Set the gripper to a specific position (-10 to 100 degrees):
+Set the gripper to a specific position (-11.5 to 108.9 degrees):
 
 ```json
 {
@@ -225,33 +231,29 @@ Set the gripper to a specific position (-10 to 100 degrees):
 }
 ```
 
-## Frame System
+`degrees` must be between `-11.5` and `108.9`. `speed` (deg/s, default `50`), `acc` (deg/s², default `100`), and `wait` (default `true`) are optional.
 
-The gripper exposes a bounding-box geometry (roughly 70 mm × 40 mm × 60 mm, offset 30 mm beyond the wrist) that the motion service can treat as an obstacle during planning. For that geometry to be placed correctly in the world, the gripper's parent frame must be declared at the machine-config level — typically `link4` of the arm, which is the end of the arm's kinematic chain.
+## Frame system
 
-Add a `frame` block to the gripper component in your machine config:
+The arm's frame is the gripper mount: a `tool` link 52 mm beyond the wrist-roll axis along the roll axis. Parent the gripper to the arm with no offset:
 
 ```json
-"frame": {
-  "parent": "<arm-name>:link4",
-  "translation": {"x": 0, "y": 0, "z": 0},
-  "orientation": {"type": "euler_angles", "value": {"pitch": 0, "roll": 0, "yaw": 0}}
-}
+"frame": { "parent": "<arm-name>" }
 ```
 
-Replace `<arm-name>` with the `name` of your `waveshare-roarm:arm` component. Without this frame declaration, the gripper's bounding box will not be attached to the arm's end effector and motion planning will not account for it.
+The gripper reports a zero-DoF kinematic model whose leaf, `tcp`, is the grasp point between the closed jaw tips, 63.4 mm beyond the mount along the approach axis. `GetPose("<gripper>", "world")` and motion requests that target the gripper resolve there. The same model carries a 70 x 40 x 70 mm box for the jaw envelope, which is what makes the gripper an obstacle for motion planning: viam-server takes collision geometry for arm and gripper components from their kinematic model. Do not add a compensating translation to the gripper's `frame`.
 
 ## Joint Limits and Specifications
 
-The RoArm-M3 has the following joint limits:
+The module enforces these joint limits, taken from the kinematic model (`roarm_m3.json`, which mirrors the Waveshare URDF). Joint 6 is the gripper, in the software frame:
 
 | Joint | Range (Radians) | Range (Degrees) | Description |
 |-------|-----------------|-----------------|-------------|
-| 1     | -3.3 to 3.3     | -189° to 189°   | Base rotation |
-| 2     | -1.9 to 1.9     | -109° to 109°   | Shoulder |
-| 3     | -1.2 to 3.3     | -69° to 189°    | Elbow |
-| 4     | -1.9 to 1.9     | -109° to 109°   | Wrist tilt |
-| 5     | -3.3 to 3.3     | -189° to 189°   | Wrist rotation |
+| 1     | -3.14 to 3.14   | -180° to 180°   | Base rotation |
+| 2     | -1.57 to 1.57   | -90° to 90°     | Shoulder |
+| 3     | -1.0 to 2.95    | -57° to 169°    | Elbow |
+| 4     | -1.57 to 1.57   | -90° to 90°     | Wrist tilt |
+| 5     | -3.14 to 3.14   | -180° to 180°   | Wrist rotation |
 | 6     | -0.2 to 1.9     | -11° to 109°    | Gripper |
 
 ## WiFi Configuration
@@ -283,9 +285,23 @@ The arm connects to your existing WiFi network. You'll need to configure this th
 
 ### Performance Tips
 
-- Use HTTP communication for better performance when possible
-- Joint position caching has been removed for more consistent real-time feedback
 - To trace raw serial frames while debugging wire issues, set the `ROARM_WIRE_TRACE=1` environment variable before starting the module. Each sent command and received buffer will be logged at debug level.
+
+### Hardware notes
+
+Measured on a RoArm-M3 over USB serial at 115200 baud:
+
+- Speed and acceleration units: joints 1, 2 and 5 commanded at 20, 50 and 100 deg/s with `cmd/cli time-move` ran within 10% of the commanded speed, confirming the 4096 steps/rev conversion; no constant adjustment was needed.
+- Settle detection: a 30 degree move at 50 deg/s returned within 150 ms of the arm stopping, polling feedback every 50 ms with no frame errors.
+- Joint limits: joints 2 and 3 reach the model limits (±90°, -57° to 169°) without binding.
+- Geometry: the 52 mm mount offset, 63 mm mount-to-jaw-tip distance, and 70 x 40 x 70 mm jaw envelope match the physical arm.
+- Gripper: `Open`, an empty `Grab` (false) and a `Grab` on an object (true) each return when the jaw stops; gripper `IsMoving` stays false while only the arm moves.
+- Reconfigure: a speed-only change does not reopen the serial port; a bad port leaves the previous connection working and reports the error.
+- Streamed trajectories (50 points at 10 Hz, ±0.3 rad sine on joint 1, `cmd/streambench`):
+  - live producer, one point per batch at its own time: wall 5.30 s for a 4.9 s trajectory (34 ms start gate, 460 ms final settle), 0 late points. The arm follows one segment (100 ms) behind a live producer, which is inherent: a goal can only be written once it is known.
+  - whole trajectory in one batch: wall 4.90 s, 103 ms final settle, 0 late points. Each point is written when its predecessor is due, so the arm arrives on schedule.
+  - `Stop` 2.5 s into the stream: the call returned `context canceled` at 2.50 s after 25 acknowledged batches and the arm held.
+  - no frame-corruption warnings at 10 writes per second.
 
 ### Data Robustness
 
@@ -302,6 +318,17 @@ Two robustness layers are applied to handle occasional wire-level issues:
   All gripper reads and writes apply the `π − r` transform so that the
   software API stays in the `[-0.2, 1.9]` rad ( `~−11°` to `~109°` )
   convention inherited from the upstream Waveshare Python SDK.
+
+## Migrating from 0.x
+
+- Requires viam-server 1.1.0 or newer.
+- Joint limits are read from the kinematic model (±180°, ±90°, -57° to 169°, ±90°, ±180°) and may be narrower than before.
+- The arm's frame is now the gripper mount (`tool`), not the wrist-roll axis. Remove any offset you added to the gripper's `frame`.
+- `MoveToJointPositions` no longer accepts `speed` / `acceleration` in `extra`; use the `set_speed` and `set_acceleration` commands.
+- The gripper's `set_position` range is now -11.5 to 108.9 degrees, and its `speed` / `acc` parameters are in deg/s and deg/s². `GoToInputs` no longer drives the jaw.
+- `move_to_home` runs at the configured speed (default 50 deg/s), keeps the gripper where it is, and returns after the arm settles.
+- `IsMoving` on arm and gripper is read from hardware; the gripper no longer reports arm motion.
+- Speed and acceleration attributes are validated at config time.
 
 ## WaveShare RoArm-M3 Resources
 

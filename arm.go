@@ -7,9 +7,9 @@ import (
 	stdlib_errors "errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/pkg/errors"
 	commonpb "go.viam.com/api/common/v1"
@@ -23,6 +23,9 @@ import (
 	"go.viam.com/utils/rpc"
 )
 
+// homeInputs is the arm's home pose: extended, elbow at 90 degrees.
+var homeInputs = []referenceframe.Input{0, 0, math.Pi / 2, 0, 0}
+
 var (
 	RoArmM3 = resource.NewModel("hipsterbrown", "waveshare-roarm", "arm")
 
@@ -31,6 +34,12 @@ var (
 
 //go:embed roarm_m3.json
 var roarmModelJson []byte
+
+// toolOffsetMM is the distance from the wrist-roll axis to the gripper mount
+// along the roll axis, from Waveshare's RoArm-M3 URDF (link5_to_gripper_link
+// origin z = 0.052035 m). The "tool" link in roarm_m3.json carries this value;
+// bench task B5 confirms it against the physical arm.
+const toolOffsetMM = 52.0
 
 func init() {
 	resource.RegisterComponent(arm.API, RoArmM3,
@@ -78,6 +87,13 @@ func (cfg *RoArmM3Config) Validate(path string) ([]string, []string, error) {
 		return nil, nil, fmt.Errorf("%s: baudrate %d not supported", path, cfg.Baudrate)
 	}
 
+	if s := cfg.SpeedDegsPerSec; s != 0 && (s < minSpeedDegsPerSec || s > maxSpeedDegsPerSec) {
+		return nil, nil, fmt.Errorf("%s: speed_degs_per_sec must be between %.0f and %.0f, got %.1f", path, minSpeedDegsPerSec, maxSpeedDegsPerSec, s)
+	}
+	if a := cfg.AccelerationDegsPerSec; a != 0 && (a < minAccelDegsPerSecSq || a > maxAccelDegsPerSecSq) {
+		return nil, nil, fmt.Errorf("%s: acceleration_degs_per_sec_per_sec must be between %.0f and %.0f, got %.1f", path, minAccelDegsPerSecSq, maxAccelDegsPerSecSq, a)
+	}
+
 	return []string{motion.Named(cfg.motionName()).String()}, nil, nil
 }
 
@@ -87,6 +103,21 @@ func (cfg *RoArmM3Config) motionName() string {
 		return cfg.Motion
 	}
 	return "builtin"
+}
+
+// motionDefaults applies the zero-means-default rule and returns the
+// configured speed and acceleration in firmware units. Ranges are enforced
+// in Validate, so this never fails.
+func (cfg *RoArmM3Config) motionDefaults() (speedUnits, accUnits int) {
+	speed := float64(cfg.SpeedDegsPerSec)
+	if speed == 0 {
+		speed = DefaultSpeedDegsPerSec
+	}
+	acc := float64(cfg.AccelerationDegsPerSec)
+	if acc == 0 {
+		acc = DefaultAccelDegsPerSecSq
+	}
+	return speedToUnits(speed), accelToUnits(acc)
 }
 
 type roarmM3 struct {
@@ -105,9 +136,12 @@ type roarmM3 struct {
 	defaultAcc   int
 
 	closed atomic.Bool
+	// opInFlight is true between the start and end of a commanded move, so
+	// IsMoving answers true even before the servos report motion.
+	opInFlight atomic.Bool
 
-	cancelCtx  context.Context
-	cancelFunc func()
+	// clock schedules streamed trajectories; the zero value is the real clock.
+	clock clock
 
 	motion motion.Service
 }
@@ -127,38 +161,25 @@ func makeRoArmModelFrame() (referenceframe.Model, error) {
 	return m.ParseConfig("roarm_m3")
 }
 
+// jointLimitsFromModel reads the five arm joint limits (radians) from the
+// kinematic model, which is the single source of truth: the rdk arm client
+// validates remote calls against these same limits before they reach us.
+func jointLimitsFromModel(m referenceframe.Model) [][2]float64 {
+	dof := m.DoF()
+	limits := make([][2]float64, len(dof))
+	for i, l := range dof {
+		limits[i] = [2]float64{l.Min, l.Max}
+	}
+	return limits
+}
+
 func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (arm.Arm, error) {
 	conf, err := resource.NativeConfig[*RoArmM3Config](rawConf)
 	if err != nil {
 		return nil, err
 	}
 
-	// Validate and set default motion parameters
-	speedDegsPerSec := conf.SpeedDegsPerSec
-	if speedDegsPerSec == 0 {
-		speedDegsPerSec = 50 // Default speed in degrees per second
-	}
-	if speedDegsPerSec < 3 || speedDegsPerSec > 180 {
-		return nil, fmt.Errorf("speed_degs_per_sec must be between 3 and 180 degrees/second, got %.1f", speedDegsPerSec)
-	}
-
-	accelerationDegsPerSec := conf.AccelerationDegsPerSec
-	if accelerationDegsPerSec == 0 {
-		accelerationDegsPerSec = 100 // Default acceleration in degrees per second^2
-	}
-	if accelerationDegsPerSec < 10 || accelerationDegsPerSec > 500 {
-		return nil, fmt.Errorf("acceleration_degs_per_sec_per_sec must be between 10 and 500 degrees/second^2, got %.1f", accelerationDegsPerSec)
-	}
-
-	// Convert degrees/sec to internal speed units (approximate conversion based on RoArm SDK).
-	// Preserve the 30-unit (~3 deg/s) floor for safety margin beyond the helper's minSpeedUnits=1.
-	defaultSpeed := speedToUnits(float64(speedDegsPerSec))
-	if defaultSpeed < 30 {
-		defaultSpeed = 30
-	}
-
-	// Convert degrees/sec^2 to internal acceleration units.
-	defaultAcc := accelToUnits(float64(accelerationDegsPerSec))
+	defaultSpeed, defaultAcc := conf.motionDefaults()
 
 	// Create controller configuration
 	controllerConfig := &RoArmConfig{
@@ -186,8 +207,6 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		return nil, err
 	}
 
-	cancelCtx, cancelFunc := context.WithCancel(context.Background())
-
 	arm := &roarmM3{
 		name:         rawConf.ResourceName(),
 		cfg:          conf,
@@ -195,16 +214,14 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		logger:       logger,
 		controller:   controller,
 		model:        model,
-		jointLimits:  RoArmM3JointLimits[:5], // Only first 5 joints
+		jointLimits:  jointLimitsFromModel(model),
 		defaultSpeed: defaultSpeed,
 		defaultAcc:   defaultAcc,
-		cancelCtx:    cancelCtx,
-		cancelFunc:   cancelFunc,
 		motion:       ms,
 	}
 
 	logger.Infof("RoArm-M3 configured with speed: %.1f deg/s (internal: %d), acceleration: %.1f deg/s² (internal: %d)",
-		speedDegsPerSec, defaultSpeed, accelerationDegsPerSec, defaultAcc)
+		speedFromUnits(defaultSpeed), defaultSpeed, accelFromUnits(defaultAcc), defaultAcc)
 
 	return arm, nil
 }
@@ -266,6 +283,8 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	}
 	ctx, done := r.opMgr.New(ctx)
 	defer done()
+	r.opInFlight.Store(true)
+	defer r.opInFlight.Store(false)
 
 	// Snapshot motion params under the mutex so concurrent Reconfigure /
 	// DoCommand writers can't race with us reading them here.
@@ -275,107 +294,63 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	jointLimits := r.jointLimits
 	r.mu.Unlock()
 
-	if len(positions) != 5 {
-		return fmt.Errorf("expected 5 joint positions for arm, got %d", len(positions))
+	if len(positions) != len(jointLimits) {
+		return fmt.Errorf("expected %d joint positions for arm, got %d", len(jointLimits), len(positions))
 	}
 
-	// Validate input ranges and clamp positions for the 5 arm joints
-	clampedPositions := make([]float64, len(positions))
-	for i, pos := range positions {
-		min, max := jointLimits[i][0], jointLimits[i][1]
-
-		// Validate and clamp the position
-		if pos < min || pos > max {
-			r.logger.Warnf("Joint %d position %.3f rad (%.1f°) out of range [%.3f, %.3f] rad ([%.1f°, %.1f°]), clamping",
-				i+1, pos, pos*180/math.Pi, min, max, min*180/math.Pi, max*180/math.Pi)
-		}
-		clampedPositions[i] = math.Max(min, math.Min(max, pos))
+	clamped, hits := clampToLimits(positions, jointLimits)
+	if len(hits) > 0 {
+		r.logger.Warnf("clamped to joint limits; the executed path will deviate from the requested one: %s", strings.Join(hits, "; "))
 	}
 
-	// Get current gripper position to preserve it
-	currentFullPositions, err := r.controller.GetJointRadians(ctx)
+	ctrl := r.snapshotController()
+	current, err := readAllJointRadians(ctx, ctrl)
 	if err != nil {
 		return fmt.Errorf("MoveToJointPositions: read current positions: %w", err)
 	}
-	if len(currentFullPositions) < 6 {
-		return fmt.Errorf("MoveToJointPositions: short feedback (got %d joints)", len(currentFullPositions))
-	}
-	currentGripperPos := currentFullPositions[5] // Joint 6 (gripper)
+	target := make([]float64, 6)
+	copy(target, clamped)
+	target[5] = current[5] // preserve the gripper
 
-	// Create full 6-joint array with arm positions + current gripper position
-	fullPositions := make([]float64, 6)
-	copy(fullPositions, clampedPositions)
-	fullPositions[5] = currentGripperPos // Preserve gripper position
+	return r.moveAndSettle(ctx, ctrl, current, target, speed, acc)
+}
 
-	// Check for speed/acceleration overrides in extra parameters. These
-	// overrides are local to this move; do not mutate the struct fields.
-	if extra != nil {
-		if speedOverride, ok := extra["speed"]; ok {
-			if speedVal, ok := speedOverride.(float64); ok {
-				// Convert from degrees/sec to internal units; preserve 30-unit safety floor.
-				speed = speedToUnits(speedVal)
-				if speed < 30 {
-					speed = 30
-				}
-			}
-		}
-		if accOverride, ok := extra["acceleration"]; ok {
-			if accVal, ok := accOverride.(float64); ok {
-				// Convert from degrees/sec^2 to internal units.
-				acc = accelToUnits(accVal)
-			}
+// clampToLimits clamps positions into limits and reports each clamp as a
+// human-readable string so callers can log once per move.
+func clampToLimits(positions []referenceframe.Input, limits [][2]float64) ([]float64, []string) {
+	clamped := make([]float64, len(positions))
+	var hits []string
+	for i, pos := range positions {
+		lo, hi := limits[i][0], limits[i][1]
+		clamped[i] = math.Max(lo, math.Min(hi, float64(pos)))
+		if clamped[i] != float64(pos) {
+			hits = append(hits, fmt.Sprintf("joint %d %.1f° -> [%.1f°, %.1f°]",
+				i+1, pos*180/math.Pi, lo*180/math.Pi, hi*180/math.Pi))
 		}
 	}
+	return clamped, hits
+}
 
-	// Send command to controller with all 6 joints (including preserved gripper)
-	if err := r.controller.SetJointRadians(ctx, fullPositions, speed, acc); err != nil {
+// moveAndSettle writes a full 6-joint target and blocks until joints 1-5
+// settle. Callers own the opInFlight flag (the streamed path calls this from
+// inside a longer in-flight window, so it must not clear the flag itself).
+func (r *roarmM3) moveAndSettle(ctx context.Context, ctrl RoArmHandle, current, target []float64, speed, acc int) error {
+	if err := ctrl.SetJointRadians(ctx, target, speed, acc); err != nil {
 		return fmt.Errorf("failed to move arm: %w", err)
 	}
-
-	// Calculate wait time based on movement distance and configured speed
-	currentArmPositions := make([]float64, 5)
-	if len(currentFullPositions) >= 5 {
-		copy(currentArmPositions, currentFullPositions[:5])
+	timeout := settleTimeoutFor(maxTravel(current, target, armMask), speed)
+	if _, err := ctrl.WaitUntilSettled(ctx, target, armMask, timeout); err != nil {
+		return fmt.Errorf("arm did not settle: %w", err)
 	}
-
-	maxMovement := 0.0
-	for i, target := range clampedPositions {
-		movement := math.Abs(target - currentArmPositions[i])
-		if movement > maxMovement {
-			maxMovement = movement
-		}
-	}
-
-	// Calculate move time based on configured speed (convert internal units back to rad/sec)
-	speedDegPerSec := speedFromUnits(speed)
-	speedRadPerSec := speedDegPerSec * math.Pi / 180.0
-	moveTimeSeconds := maxMovement / speedRadPerSec
-	if moveTimeSeconds < 0.1 {
-		moveTimeSeconds = 0.1 // Minimum move time
-	}
-	if moveTimeSeconds > 10.0 {
-		moveTimeSeconds = 10.0 // Maximum move time for safety
-	}
-
-	// Refine the motion tracker deadline with our better per-move estimate so
-	// IsMoving reflects reality more closely than the controller's worst-case
-	// fallback.
-	moveDuration := time.Duration(moveTimeSeconds * float64(time.Second))
-	r.controller.NoteMotionDeadline(time.Now().Add(moveDuration))
-
-	// Wait for movement to complete
-	select {
-	case <-time.After(moveDuration):
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
 	return nil
 }
 
 func (r *roarmM3) MoveThroughJointPositions(ctx context.Context, positions [][]referenceframe.Input, options *arm.MoveOptions, extra map[string]interface{}) error {
 	if r.closed.Load() {
 		return errClosed
+	}
+	if options != nil {
+		r.logger.Debug("MoveOptions are not yet honored by this module (sub-project 3); using configured speed and acceleration")
 	}
 	for _, jointPositions := range positions {
 		if err := r.MoveToJointPositions(ctx, jointPositions, extra); err != nil {
@@ -397,7 +372,7 @@ func (r *roarmM3) JointPositions(ctx context.Context, extra map[string]interface
 	// r.controller is swapped only in Reconfigure, which takes r.mu.Lock().
 	// Briefly lock to snapshot, then release before the blocking serial I/O
 	// so concurrent callers (e.g. EndPosition) don't deadlock on re-entry.
-	allRadians, err := r.readAllJointRadians(ctx)
+	allRadians, err := readAllJointRadians(ctx, r.snapshotController())
 	if err != nil {
 		return nil, fmt.Errorf("failed to read joint positions: %w", err)
 	}
@@ -418,10 +393,10 @@ func (r *roarmM3) snapshotController() RoArmHandle {
 	return ctrl
 }
 
-// readAllJointRadians snapshots the controller, reads all 6 joints, and
-// enforces the 6-element invariant for callers that index into the slice.
-func (r *roarmM3) readAllJointRadians(ctx context.Context) ([]float64, error) {
-	radians, err := r.snapshotController().GetJointRadians(ctx)
+// readAllJointRadians reads all 6 joints from ctrl and enforces the
+// 6-element invariant for callers that index into the slice.
+func readAllJointRadians(ctx context.Context, ctrl RoArmHandle) ([]float64, error) {
+	radians, err := ctrl.GetJointRadians(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -439,19 +414,17 @@ func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error 
 
 	// Snapshot defaultAcc under the mutex so Reconfigure / DoCommand writers
 	// can't race with us reading it.
+	ctrl := r.snapshotController()
 	r.mu.Lock()
 	acc := r.defaultAcc
 	r.mu.Unlock()
 
-	current, err := r.controller.GetJointRadians(ctx)
+	current, err := readAllJointRadians(ctx, ctrl)
 	if err != nil {
 		return fmt.Errorf("stop: read current positions: %w", err)
 	}
-	if len(current) < 6 {
-		return fmt.Errorf("stop: short feedback from controller (got %d joints)", len(current))
-	}
-	const stopSpeed = 100 // internal units, ~10 deg/s — gentle soft stop
-	return r.controller.SetJointRadians(ctx, current, stopSpeed, acc)
+	stopSpeed := speedToUnits(stopSpeedDegsPerSec) // gentle soft stop
+	return ctrl.SetJointRadians(ctx, current, stopSpeed, acc)
 }
 
 func (r *roarmM3) Kinematics(ctx context.Context) (referenceframe.Model, error) {
@@ -477,7 +450,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("set_torque command requires 'enable' boolean parameter")
 		}
-		err := r.controller.SetTorque(ctx, enable)
+		err := r.snapshotController().SetTorque(ctx, enable)
 		return map[string]interface{}{"success": err == nil}, err
 
 	case "set_led":
@@ -485,15 +458,15 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("set_led command requires 'brightness' number parameter")
 		}
-		err := r.controller.SetLED(ctx, int(brightness))
+		err := r.snapshotController().SetLED(ctx, int(brightness))
 		return map[string]interface{}{"success": err == nil}, err
 
 	case "move_to_home":
-		err := r.controller.MoveToHome(ctx)
+		err := r.MoveToJointPositions(ctx, homeInputs, nil)
 		return map[string]interface{}{"success": err == nil}, err
 
 	case "get_feedback":
-		feedback, err := r.controller.GetFeedback(ctx)
+		feedback, err := r.snapshotController().GetFeedback(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -509,7 +482,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 				"elbow":    feedback.E,
 				"wrist":    feedback.Wrist,
 				"roll":     feedback.R,
-				"gripper":  feedback.G,
+				"gripper":  gripperSoftwareToWire(feedback.G),
 			},
 			"torques": map[string]interface{}{
 				"base":     feedback.TB,
@@ -526,14 +499,11 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("set_speed requires 'value' number")
 		}
-		if speed < 3 || speed > 180 {
+		if speed < minSpeedDegsPerSec || speed > maxSpeedDegsPerSec {
 			return nil, fmt.Errorf("speed out of range: %.1f", speed)
 		}
 		r.mu.Lock()
 		r.defaultSpeed = speedToUnits(speed)
-		if r.defaultSpeed < 30 {
-			r.defaultSpeed = 30
-		}
 		r.mu.Unlock()
 		return map[string]interface{}{"speed_set": speed}, nil
 
@@ -542,7 +512,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("set_acceleration requires 'value' number")
 		}
-		if acc < 10 || acc > 500 {
+		if acc < minAccelDegsPerSecSq || acc > maxAccelDegsPerSecSq {
 			return nil, fmt.Errorf("accel out of range: %.1f", acc)
 		}
 		r.mu.Lock()
@@ -560,7 +530,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 
 	// Gripper ↔ arm DoCommand bridge. See gripper_bridge.go.
 	case cmdGetGripperRad:
-		radians, err := r.readAllJointRadians(ctx)
+		radians, err := readAllJointRadians(ctx, r.snapshotController())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", cmdGetGripperRad, err)
 		}
@@ -571,17 +541,32 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if !ok {
 			return nil, fmt.Errorf("%s requires %q number", cmdSetGripperRad, keyRad)
 		}
-		speed := defaultGripperSpeed
-		acc := defaultGripperAcc
+		if rad < gripperJointLimits[0] || rad > gripperJointLimits[1] {
+			return nil, fmt.Errorf("%s: %.3f rad is outside the gripper range [%.2f, %.2f]", cmdSetGripperRad, rad, gripperJointLimits[0], gripperJointLimits[1])
+		}
+		speed := speedToUnits(defaultGripperSpeedDegsPerSec)
+		acc := accelToUnits(defaultGripperAccDegsPerSecSq)
 		if v, ok := cmd[keySpeed].(float64); ok {
-			speed = int(v)
+			speed = speedToUnits(v)
 		}
 		if v, ok := cmd[keyAcc].(float64); ok {
-			acc = int(v)
+			acc = accelToUnits(v)
+		}
+		wait := true
+		if w, ok := cmd[keyWait].(bool); ok {
+			wait = w
 		}
 		ctrl := r.snapshotController()
 		if err := ctrl.SetJointRadian(ctx, 6, rad, speed, acc); err != nil {
 			return nil, err
+		}
+		if wait {
+			target := make([]float64, 6)
+			target[5] = rad
+			fullTravel := gripperJointLimits[1] - gripperJointLimits[0]
+			if _, err := ctrl.WaitUntilSettled(ctx, target, gripperMask, settleTimeoutFor(fullTravel, speed)); err != nil {
+				return nil, fmt.Errorf("%s: gripper did not settle: %w", cmdSetGripperRad, err)
+			}
 		}
 		return map[string]interface{}{"success": true}, nil
 
@@ -589,14 +574,11 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		// Soft hold: read the current software-frame gripper position and
 		// re-send it as the target at a gentle speed. Matches arm-level Stop.
 		ctrl := r.snapshotController()
-		radians, err := ctrl.GetJointRadians(ctx)
+		radians, err := readAllJointRadians(ctx, ctrl)
 		if err != nil {
 			return nil, fmt.Errorf("%s: read position: %w", cmdStopGripper, err)
 		}
-		if len(radians) < 6 {
-			return nil, fmt.Errorf("%s: short feedback (got %d joints)", cmdStopGripper, len(radians))
-		}
-		if err := ctrl.SetJointRadian(ctx, 6, radians[5], stopGripperSpeed, defaultGripperAcc); err != nil {
+		if err := ctrl.SetJointRadian(ctx, 6, radians[5], speedToUnits(stopSpeedDegsPerSec), accelToUnits(defaultGripperAccDegsPerSecSq)); err != nil {
 			return nil, err
 		}
 		return map[string]interface{}{"success": true}, nil
@@ -610,7 +592,10 @@ func (r *roarmM3) IsMoving(ctx context.Context) (bool, error) {
 	if r.closed.Load() {
 		return false, errClosed
 	}
-	return r.controller.IsMoving(ctx)
+	if r.opInFlight.Load() {
+		return true, nil
+	}
+	return r.snapshotController().IsMoving(ctx)
 }
 
 func (r *roarmM3) Geometries(ctx context.Context, extra map[string]interface{}) ([]spatialmath.Geometry, error) {
@@ -636,7 +621,6 @@ func (r *roarmM3) Close(ctx context.Context) error {
 	if !r.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	r.cancelFunc()
 	r.opMgr.CancelRunning(ctx)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -655,23 +639,6 @@ func (r *roarmM3) Reconfigure(ctx context.Context, deps resource.Dependencies, c
 		return err
 	}
 
-	// Validate motion parameters before we touch anything.
-	speedDegsPerSec := newConf.SpeedDegsPerSec
-	if speedDegsPerSec == 0 {
-		speedDegsPerSec = 50
-	}
-	if speedDegsPerSec < 3 || speedDegsPerSec > 180 {
-		return fmt.Errorf("speed_degs_per_sec must be between 3 and 180 degrees/second, got %.1f", speedDegsPerSec)
-	}
-
-	accelerationDegsPerSec := newConf.AccelerationDegsPerSec
-	if accelerationDegsPerSec == 0 {
-		accelerationDegsPerSec = 100
-	}
-	if accelerationDegsPerSec < 10 || accelerationDegsPerSec > 500 {
-		return fmt.Errorf("acceleration_degs_per_sec_per_sec must be between 10 and 500 degrees/second^2, got %.1f", accelerationDegsPerSec)
-	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -683,9 +650,6 @@ func (r *roarmM3) Reconfigure(ctx context.Context, deps resource.Dependencies, c
 		r.cfg.SerialTimeout != newConf.SerialTimeout
 
 	if needsReopen {
-		if r.controller != nil {
-			_ = r.controller.Close(ctx)
-		}
 		ctrl, err := NewRoArmController(&RoArmConfig{
 			Host:          newConf.Host,
 			Port:          newConf.Port,
@@ -695,24 +659,25 @@ func (r *roarmM3) Reconfigure(ctx context.Context, deps resource.Dependencies, c
 			Logger:        r.logger,
 		})
 		if err != nil {
-			return err
+			// Keep the old controller and config: the arm stays usable and a
+			// later Reconfigure with a working config still sees the diff.
+			return fmt.Errorf("reconfigure: open new connection: %w", err)
+		}
+		if r.controller != nil {
+			_ = r.controller.Close(ctx)
 		}
 		r.controller = ctrl
 	}
 
-	// Motion params always update. Preserve 30-unit safety floor on speed.
-	defaultSpeed := speedToUnits(float64(speedDegsPerSec))
-	if defaultSpeed < 30 {
-		defaultSpeed = 30
-	}
-	defaultAcc := accelToUnits(float64(accelerationDegsPerSec))
+	// Motion params always update.
+	defaultSpeed, defaultAcc := newConf.motionDefaults()
 
 	r.defaultSpeed = defaultSpeed
 	r.defaultAcc = defaultAcc
 	r.cfg = newConf
 
 	r.logger.Infof("RoArm-M3 reconfigured with speed: %.1f deg/s (internal: %d), acceleration: %.1f deg/s² (internal: %d)",
-		speedDegsPerSec, defaultSpeed, accelerationDegsPerSec, defaultAcc)
+		speedFromUnits(defaultSpeed), defaultSpeed, accelFromUnits(defaultAcc), defaultAcc)
 
 	return nil
 }

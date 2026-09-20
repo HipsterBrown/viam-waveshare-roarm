@@ -98,3 +98,28 @@ func TestGripperValidateReturnsArmAsDep(t *testing.T) {
 		t.Fatalf("expected [my-arm], got %v", deps)
 	}
 }
+
+func TestArmValidateRejectsOutOfRangeSpeed(t *testing.T) {
+	for _, v := range []float32{1, 200} {
+		cfg := &RoArmM3Config{Port: "/dev/ttyUSB0", SpeedDegsPerSec: v}
+		if _, _, err := cfg.Validate("arms.0"); err == nil || !strings.Contains(err.Error(), "speed_degs_per_sec") {
+			t.Fatalf("speed %v: expected a speed_degs_per_sec error, got %v", v, err)
+		}
+	}
+}
+
+func TestArmValidateRejectsOutOfRangeAcceleration(t *testing.T) {
+	for _, v := range []float32{5, 600} {
+		cfg := &RoArmM3Config{Port: "/dev/ttyUSB0", AccelerationDegsPerSec: v}
+		if _, _, err := cfg.Validate("arms.0"); err == nil || !strings.Contains(err.Error(), "acceleration_degs_per_sec_per_sec") {
+			t.Fatalf("accel %v: expected an acceleration error, got %v", v, err)
+		}
+	}
+}
+
+func TestArmValidateAcceptsZeroMotionParams(t *testing.T) {
+	cfg := &RoArmM3Config{Port: "/dev/ttyUSB0"}
+	if _, _, err := cfg.Validate("arms.0"); err != nil {
+		t.Fatalf("zero means default: %v", err)
+	}
+}
