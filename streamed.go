@@ -144,7 +144,12 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 			if idx > 0 {
 				due = start.Add(prev)
 			}
-			if behind := r.clock.Time().Sub(due); behind >= time.Millisecond {
+			// Late means written after the point's OWN time. A live producer
+			// hands point k over at T(k), one segment after the T(k-1) write
+			// slot, and that is on time, not late; the arm then arrives one
+			// segment behind, which is the best any goal-following controller
+			// can do without knowing the next point in advance.
+			if behind := r.clock.Time().Sub(start.Add(p.Time)); behind >= time.Millisecond {
 				late++
 				if behind > maxLate {
 					maxLate = behind
