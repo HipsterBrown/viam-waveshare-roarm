@@ -1149,3 +1149,130 @@ func TestArmValidateRejectsBadGoalCloudTolerances(t *testing.T) {
 		t.Errorf("180 degrees and an unset position tolerance are both legal: %v", err)
 	}
 }
+
+// --- extra: {"waitAtEnd": false, "interpolate": false} ---
+//
+// These are the keys the RDK's builtin motion service teleop executor sends on
+// every tick (rdk services/motion/builtin/teleop.go), not an invention of this
+// module. "wait" is accepted as an alias for the module's own vocabulary.
+
+func TestMoveToJointPositions_DefaultWaitsForSettle(t *testing.T) {
+	fc := &testfake.FakeController{}
+	r := newTestArm(t, fc)
+	target := []referenceframe.Input{0.3, 0, 0, 0, 0}
+
+	for _, extra := range []map[string]interface{}{
+		nil, {}, {"waitAtEnd": true}, {"wait": true}, {"waitAtEnd": "yes"},
+	} {
+		fc.SettleCalls = 0
+		if err := r.MoveToJointPositions(context.Background(), target, extra); err != nil {
+			t.Fatal(err)
+		}
+		if fc.SettleCalls != 1 {
+			t.Fatalf("extra=%v: expected 1 settle, got %d", extra, fc.SettleCalls)
+		}
+	}
+}
+
+func TestMoveToJointPositions_SkipsSettleOnEitherSpelling(t *testing.T) {
+	// HoldStill: the arm never reaches the goal, so a settle would run its
+	// whole budget. Both spellings must return anyway, with the goal written.
+	for _, extra := range []map[string]interface{}{
+		{"waitAtEnd": false}, {"wait": false},
+	} {
+		fc := &testfake.FakeController{HoldStill: true}
+		r := newTestArm(t, fc)
+		if err := r.MoveToJointPositions(context.Background(),
+			[]referenceframe.Input{0.3, 0, 0, 0, 0}, extra); err != nil {
+			t.Fatalf("extra=%v: %v", extra, err)
+		}
+		if fc.SettleCalls != 0 {
+			t.Fatalf("extra=%v: expected no settle, got %d", extra, fc.SettleCalls)
+		}
+		if fc.WriteCount != 1 {
+			t.Fatalf("extra=%v: expected 1 goal write, got %d", extra, fc.WriteCount)
+		}
+		if math.Abs(fc.LastRadians[0]-0.3) > 1e-9 {
+			t.Fatalf("extra=%v: expected joint 1 at 0.3, got %v", extra, fc.LastRadians)
+		}
+	}
+}
+
+// The exact payload rdk's teleop executor sends: one write, no settle.
+func TestMoveThroughJointPositions_TeleopPayloadCollapsesToOneWrite(t *testing.T) {
+	fc := &testfake.FakeController{HoldStill: true}
+	r := newTestArm(t, fc)
+	waypoints := [][]referenceframe.Input{
+		{0.1, 0, 0, 0, 0}, {0.2, 0, 0, 0, 0}, {0.3, 0, 0, 0, 0},
+	}
+
+	if err := r.MoveThroughJointPositions(context.Background(), waypoints, nil,
+		map[string]interface{}{"waitAtEnd": false, "interpolate": false}); err != nil {
+		t.Fatal(err)
+	}
+	if fc.SettleCalls != 0 {
+		t.Fatalf("expected no settle, got %d", fc.SettleCalls)
+	}
+	if fc.WriteCount != 1 {
+		t.Fatalf("interpolate=false must collapse to the endpoint: expected 1 write, got %d", fc.WriteCount)
+	}
+	if math.Abs(fc.LastRadians[0]-0.3) > 1e-9 {
+		t.Fatalf("expected the final waypoint 0.3 to be the one written, got %v", fc.LastRadians)
+	}
+}
+
+// interpolate defaults true, so a path the caller wants traced keeps its
+// intermediate settles even when the final one is skipped.
+func TestMoveThroughJointPositions_InterpolatedPathKeepsIntermediateSettles(t *testing.T) {
+	fc := &testfake.FakeController{}
+	r := newTestArm(t, fc)
+	waypoints := [][]referenceframe.Input{
+		{0.1, 0, 0, 0, 0}, {0.2, 0, 0, 0, 0}, {0.3, 0, 0, 0, 0},
+	}
+
+	if err := r.MoveThroughJointPositions(context.Background(), waypoints, nil,
+		map[string]interface{}{"waitAtEnd": false}); err != nil {
+		t.Fatal(err)
+	}
+	if fc.SettleCalls != 2 {
+		t.Fatalf("expected the 2 intermediate waypoints to settle, got %d", fc.SettleCalls)
+	}
+	if fc.WriteCount != 3 {
+		t.Fatalf("expected all 3 waypoints written, got %d", fc.WriteCount)
+	}
+}
+
+func TestMoveThroughJointPositions_DefaultsUnchanged(t *testing.T) {
+	fc := &testfake.FakeController{}
+	r := newTestArm(t, fc)
+	waypoints := [][]referenceframe.Input{
+		{0.1, 0, 0, 0, 0}, {0.2, 0, 0, 0, 0}, {0.3, 0, 0, 0, 0},
+	}
+
+	if err := r.MoveThroughJointPositions(context.Background(), waypoints, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if fc.SettleCalls != 3 || fc.WriteCount != 3 {
+		t.Fatalf("default must settle every waypoint: %d settles, %d writes", fc.SettleCalls, fc.WriteCount)
+	}
+}
+
+func TestMoveToJointPositions_NonBlockingStillReportsIsMoving(t *testing.T) {
+	// The call no longer stays in flight, so IsMoving has to come off the
+	// hardware -- otherwise a non-blocking move would make the arm look idle.
+	fc := &testfake.FakeController{HoldStill: true, Moving: true}
+	r := newTestArm(t, fc)
+
+	if err := r.MoveToJointPositions(context.Background(),
+		[]referenceframe.Input{0.3, 0, 0, 0, 0},
+		map[string]interface{}{"waitAtEnd": false}); err != nil {
+		t.Fatal(err)
+	}
+	moving, err := r.IsMoving(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !moving {
+		t.Fatal("expected IsMoving to report the arm still moving")
+	}
+}

@@ -56,6 +56,25 @@ The following attributes are available for the arm component:
 >
 > **`MoveThroughJointPositions` and `MoveOptions`.** A speed or acceleration limit passed in `MoveOptions` (`MaxVelRads`/`MaxVelRadsJoints`, `MaxAccRads`/`MaxAccRadsJoints`) is honored for the whole move, clamped to the configured `[3, 180]` deg/s and `[10, 500]` deg/s² ranges; a per-joint slice wins over the scalar and the move slows to its most restrictive joint. `MaxTCPSpeedMPerSec` is not honored: capping tool-frame speed needs a Jacobian this module does not compute, so a request that sets only that field runs at the configured default speed and logs a debug line saying so.
 >
+> **Non-blocking moves: `waitAtEnd` and `interpolate`.** `MoveToJointPositions` and `MoveThroughJointPositions` accept two optional booleans in `extra`, both defaulting to `true`:
+>
+> ```json
+> { "waitAtEnd": false, "interpolate": false }
+> ```
+>
+> - **`waitAtEnd`** — block until the move settles, or return as soon as the goal is on the wire. `wait` is accepted as an alias, since that is the spelling this module's own `set_gripper_rad` uses; `waitAtEnd` is the RDK-originated spelling and wins if both are present.
+> - **`interpolate`** — whether a multi-waypoint call is a *path to trace* or only a *route to its last point*. With `false` the waypoints are collapsed to the endpoint and written once.
+>
+> **These are not an invention of this module.** The builtin motion service's teleop executor sends exactly `{"waitAtEnd": false, "interpolate": false}` to any component it can type-assert to `arm.Arm`, on every tick (rdk `services/motion/builtin/teleop.go`); it only falls back to `GoToInputs` for components that are not arms. Before this was honored, the driver settled on every tick and teleop queued roughly five commands per completed move. Setting `teleop_interpolate_override` on the motion service flips it back to `{"waitAtEnd": true, "interpolate": true}`.
+>
+> **This changes what a successful return means.** It means *the arm was told*, not *the arm arrived*. There is no settle, so none of the diagnostics above apply: a goal the arm stops short of, or never starts moving toward, returns success. Ask `IsMoving` or `JointPositions` if you need to know where the arm actually is — `IsMoving` reads the hardware on this path, so it still reports the truth.
+>
+> **A second command supersedes the first**, it does not queue behind it and is not rejected. The in-flight move's context is cancelled and the new goal write replaces the firmware's goal outright. Nothing is left half-applied: one joint command is a single write of all six targets and the firmware interpolates from wherever the arm currently is, so the arm always tracks exactly one goal — the most recent. The cost is that a caller cannot assume any earlier goal was reached. That is the right trade for teleop and the wrong one for a planned path.
+>
+> **Why `interpolate` exists, and why the two flags belong together.** This arm has exactly one motion primitive: write a goal, and the firmware interpolates toward it on-device. A second write supersedes the first outright. So an intermediate waypoint is only physically distinguishable if the arm is given time to arrive at it — and time to arrive is exactly what `waitAtEnd: false` asks us not to spend. With `interpolate: false` the trajectory is therefore collapsed to its endpoint and written once, rather than writing N goals that supersede each other within a millisecond of bus time and only pretend to trace a path. With `interpolate` left at its default `true`, intermediate waypoints still settle and only the final settle is skipped, so a path the caller does want traced keeps its shape.
+>
+> **`MoveToPosition` does not honor either flag.** It delegates to the motion service, whose generic execute path drives the arm through `GoToInputs`, which the RDK defines without an `extra` map. A planned path executed without settling between waypoints would collapse to a straight line to the final one, skipping the obstacle avoidance the plan existed for, so this is the correct outcome rather than a gap to be plumbed around. The teleop executor is the exception above: it bypasses `GoToInputs` and calls `MoveThroughJointPositions` directly.
+>
 > **Streaming trajectories.** `MoveThroughJointPositionsStreamed` (viam-server 1.1.0 or newer) writes each trajectory point on the producer's schedule, at a per-segment speed that covers the segment's travel in its time slot. If the arm starts more than 5 degrees from the first point, one ordinary move closes the gap before the clock starts. Late points are written, not dropped; `Constraints` are ignored. One log line per stream reports gate, late, settle, and wall time.
 
 ### 3D models

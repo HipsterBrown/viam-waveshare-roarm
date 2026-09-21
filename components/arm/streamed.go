@@ -91,7 +91,7 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 				if roarm.MaxTravel(current, first, roarm.ArmMask) > streamStartGapRad {
 					r.logger.Debugf("streamed trajectory starts %.1f deg away; settled move to its first point",
 						roarm.MaxTravel(current, first, roarm.ArmMask)*180/math.Pi)
-					if err := r.moveAndSettle(ctx, ctrl, current, first, speed, acc); err != nil {
+					if err := r.moveAndSettle(ctx, ctrl, current, first, speed, acc, true); err != nil {
 						return err
 					}
 				}

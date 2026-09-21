@@ -49,6 +49,24 @@ The arm connects to your existing WiFi network. You'll need to configure this th
 ### Performance Tips
 
 - To trace raw serial frames while debugging wire issues, set the `ROARM_WIRE_TRACE=1` environment variable before starting the module. Each sent command and received buffer will be logged at debug level.
+- **Teleop feels sluggish?** By default a move blocks until the arm physically
+  settles, so a 10 Hz command loop queues several commands per completed move.
+  The builtin motion service's teleop executor already asks for non-blocking
+  execution — it sends `{"waitAtEnd": false, "interpolate": false}` to
+  `MoveThroughJointPositions` on every tick — and the driver now honors it, so
+  teleop should be responsive with no configuration. You can send the same two
+  keys yourself in `extra` on `MoveToJointPositions` or
+  `MoveThroughJointPositions`.
+
+  **A non-blocking return means the arm was *told*, not that it *arrived*.**
+  There is no settle check, so a goal the arm stops short of still returns
+  success — ask `IsMoving` or `JointPositions` for the truth. A second command
+  supersedes the first rather than queueing behind it.
+
+  `MoveToPosition` ignores both flags: it goes through the motion service's
+  generic execute path, which drives the arm via `GoToInputs`, and the RDK
+  defines that without an `extra` map. See [docs/arm.md](docs/arm.md) for the
+  full semantics and for why `interpolate` matters.
 
 ### Hardware notes
 

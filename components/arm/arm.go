@@ -259,6 +259,18 @@ func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{})
 	return pose, nil
 }
 
+// MoveToPosition always waits for the arm to arrive, and a waitAtEnd/wait in
+// extra does not change that. This call delegates to the motion service, whose
+// generic execute path drives the arm through GoToInputs -- which the RDK's
+// InputEnabled interface defines with no extra map, so the flag is dropped
+// before it returns here. That is the right outcome anyway: a planned path
+// executed without settling between waypoints would collapse to a straight
+// line to the final one, skipping the obstacle avoidance the plan existed for.
+//
+// The motion service's TELEOP executor is the exception -- it type-asserts the
+// resource to arm.Arm and calls MoveThroughJointPositions directly with
+// {"waitAtEnd": false, "interpolate": false}, which this module honours. See
+// MoveThroughJointPositions and roarm.InterpolateArg.
 func (r *roarmM3) MoveToPosition(ctx context.Context, pose spatialmath.Pose, extra map[string]interface{}) error {
 	if r.closed.Load() {
 		return errClosed
@@ -285,18 +297,33 @@ func (r *roarmM3) MoveToPosition(ctx context.Context, pose spatialmath.Pose, ext
 	return planning.WrapMoveErr(err, path, goalCfg)
 }
 
+// MoveToJointPositions moves the arm to positions and, by default, blocks
+// until the firmware's feedback shows it there.
+//
+// `extra: {"waitAtEnd": false}` (or `{"wait": false}`) returns as soon as the
+// goal is on the wire. The return then means "the arm was told", NOT "the arm
+// arrived" -- ask IsMoving or JointPositions for that. It is for a teleop loop
+// whose command interval is shorter than a move takes.
+//
+// A second call SUPERSEDES the first rather than queueing behind it: opMgr.New
+// cancels the in-flight move's context, and the new goal write replaces the
+// firmware's goal outright. Nothing is left half-applied -- a joint command is
+// a single write of all six targets, and the firmware interpolates from
+// wherever the arm currently is -- so the arm is always tracking exactly one
+// goal, the most recent. That is what a teleop loop wants; it does mean a
+// caller cannot assume an earlier goal was ever reached.
 func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenceframe.Input, extra map[string]interface{}) error {
 	r.mu.Lock()
 	speed, acc := r.defaultSpeed, r.defaultAcc
 	r.mu.Unlock()
-	return r.moveToJointPositionsAt(ctx, positions, speed, acc)
+	return r.moveToJointPositionsAt(ctx, positions, speed, acc, roarm.WaitArg(extra))
 }
 
 // moveToJointPositionsAt is MoveToJointPositions with the speed and
 // acceleration (firmware units) supplied by the caller instead of snapshotted
 // from the configured defaults, so MoveThroughJointPositions can route a
 // resolved MoveOptions profile all the way to the write and the settle.
-func (r *roarmM3) moveToJointPositionsAt(ctx context.Context, positions []referenceframe.Input, speed, acc int) error {
+func (r *roarmM3) moveToJointPositionsAt(ctx context.Context, positions []referenceframe.Input, speed, acc int, wait bool) error {
 	if r.closed.Load() {
 		return errClosed
 	}
@@ -329,7 +356,7 @@ func (r *roarmM3) moveToJointPositionsAt(ctx context.Context, positions []refere
 	copy(target, clamped)
 	target[5] = current[5] // preserve the gripper
 
-	return r.moveAndSettle(ctx, ctrl, current, target, speed, acc)
+	return r.moveAndSettle(ctx, ctrl, current, target, speed, acc, wait)
 }
 
 // clampToLimits clamps positions into limits and reports each clamp as a
@@ -348,12 +375,18 @@ func clampToLimits(positions []referenceframe.Input, limits [][2]float64) ([]flo
 	return clamped, hits
 }
 
-// moveAndSettle writes a full 6-joint target and blocks until joints 1-5
-// settle. Callers own the opInFlight flag (the streamed path calls this from
+// moveAndSettle writes a full 6-joint target and, when wait is true, blocks
+// until joints 1-5 settle. With wait false it returns as soon as the goal is
+// on the wire and performs no settle at all, so none of the settle's
+// diagnostics (stopped short, never moved) are evaluated.
+// Callers own the opInFlight flag (the streamed path calls this from
 // inside a longer in-flight window, so it must not clear the flag itself).
-func (r *roarmM3) moveAndSettle(ctx context.Context, ctrl roarm.Handle, current, target []float64, speed, acc int) error {
+func (r *roarmM3) moveAndSettle(ctx context.Context, ctrl roarm.Handle, current, target []float64, speed, acc int, wait bool) error {
 	if err := ctrl.SetJointRadians(ctx, target, speed, acc); err != nil {
 		return fmt.Errorf("failed to move arm: %w", err)
+	}
+	if !wait {
+		return nil
 	}
 	req := roarm.SettleRequest{
 		Target:        target,
@@ -381,8 +414,24 @@ func (r *roarmM3) MoveThroughJointPositions(ctx context.Context, positions [][]r
 		return err
 	}
 	speed, acc := roarm.SpeedToUnits(speedDegs), roarm.AccelToUnits(accDegs)
-	for _, jointPositions := range positions {
-		if err := r.moveToJointPositionsAt(ctx, jointPositions, speed, acc); err != nil {
+
+	wait := roarm.WaitArg(extra)
+	// interpolate=false says the waypoints are a route to the last one, not a
+	// path to trace, so collapse them to the endpoint and write once. This is
+	// what the builtin motion service's teleop executor sends alongside
+	// waitAtEnd=false, and the two belong together: without a settle between
+	// them the intermediate writes are superseded within a millisecond of bus
+	// time and never reach the arm as motion, so writing them would be pure
+	// bus traffic pretending to be a path. See roarm.InterpolateArg.
+	if !roarm.InterpolateArg(extra) && len(positions) > 1 {
+		positions = positions[len(positions)-1:]
+	}
+	for i, jointPositions := range positions {
+		// Only the FINAL waypoint's settle is optional. An intermediate
+		// waypoint that is not settled is superseded before the arm gets
+		// anywhere near it, so under interpolate=true (a path the caller does
+		// want traced) the settle is the only thing making the waypoint real.
+		if err := r.moveToJointPositionsAt(ctx, jointPositions, speed, acc, wait || i+1 < len(positions)); err != nil {
 			return err
 		}
 
@@ -599,10 +648,7 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if v, ok := cmd[roarm.KeyAcc].(float64); ok {
 			acc = roarm.AccelToUnits(v)
 		}
-		wait := true
-		if w, ok := cmd[roarm.KeyWait].(bool); ok {
-			wait = w
-		}
+		wait := roarm.WaitArg(cmd)
 		requireMotion := true
 		if v, ok := cmd[roarm.KeyRequireMotion].(bool); ok {
 			requireMotion = v
