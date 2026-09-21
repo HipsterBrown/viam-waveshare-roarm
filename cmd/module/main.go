@@ -16,5 +16,6 @@ func main() {
 		resource.APIModel{API: rdkarm.API, Model: arm.Model},
 		resource.APIModel{API: rdkgripper.API, Model: gripper.Model},
 		resource.APIModel{API: rdkarm.API, Model: simulated.Model},
+		resource.APIModel{API: rdkgripper.API, Model: simulated.GripperModel},
 	)
 }
