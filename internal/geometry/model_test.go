@@ -5,6 +5,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/referenceframe"
 )
 
@@ -62,10 +63,10 @@ func modelWithoutTool(t *testing.T) referenceframe.Model {
 	return model
 }
 
-// The tool frame sits 52 mm beyond the wrist-roll joint, further from the
-// base than the joint itself (i.e. along +Z of the roll frame, not into
-// link4). If this fails after a JSON edit, the tool translation has the
-// wrong sign or is on the wrong axis.
+// The tool frame sits ToolOffsetMM beyond the link5 (wrist-roll) frame,
+// further from the base than link5 itself (i.e. along +Z of the roll frame,
+// not into link4). The bare model's leaf is link5. If this fails after a JSON
+// edit, the tool translation has the wrong sign or is on the wrong axis.
 func TestToolFrameIsTheGripperMount(t *testing.T) {
 	withTool, err := ArmModel("roarm_m3")
 	if err != nil {
@@ -82,9 +83,28 @@ func TestToolFrameIsTheGripperMount(t *testing.T) {
 	}
 	d := pTool.Point().Sub(pJoint.Point()).Norm()
 	if math.Abs(d-ToolOffsetMM) > 0.01 {
-		t.Fatalf("tool is %.2f mm from the roll joint, want %.1f", d, ToolOffsetMM)
+		t.Fatalf("tool is %.3f mm from link5, want %.3f", d, ToolOffsetMM)
 	}
 	if pTool.Point().Norm() <= pJoint.Point().Norm() {
-		t.Fatalf("tool (%v) is not further from the base than the roll joint (%v): translation sign is wrong", pTool.Point(), pJoint.Point())
+		t.Fatalf("tool (%v) is not further from the base than link5 (%v): translation sign is wrong", pTool.Point(), pJoint.Point())
+	}
+}
+
+// The whole chain, pinned to Waveshare's URDF: at the zero pose the tool sits
+// ToolOffsetMM along link5's +Z from link5's world origin (45.147, 0, 557.113).
+// cmd/genmeshes prints the same world positions when it regenerates
+// roarm_m3.json; if this drifts, the two have diverged.
+func TestChainMatchesURDF(t *testing.T) {
+	model, err := ArmModel("roarm_m3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := model.Transform(make([]referenceframe.Input, len(model.DoF())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := r3.Vector{X: 45.148, Y: 0, Z: 609.148}
+	if p.Point().Sub(want).Norm() > 0.1 {
+		t.Fatalf("tool at zero pose is %v, want %v", p.Point(), want)
 	}
 }

@@ -1,284 +1,279 @@
-  {
-    "name": "roarm_m3",
-    "joints": [
-      {
-        "axis": {
-          "x": 0,
-          "y": 0,
-          "z": 1
-        },
-        "id": "base_link_to_link1",
-        "max": 180.0004209182994,
-        "min": -180.0004209182994,
-        "parent": "base_link",
-        "type": "revolute"
+{
+  "name": "roarm_m3",
+  "kinematic_param_type": "SVA",
+  "links": [
+    {
+      "id": "base_link",
+      "translation": {
+        "X": 0,
+        "Y": 0,
+        "Z": 70.1
       },
-      {
-        "axis": {
-          "x": -0,
-          "y": 0,
-          "z": 1
-        },
-        "id": "link1_to_link2",
-        "max": 90.0002104591497,
-        "min": -90.0002104591497,
-        "parent": "link1",
-        "type": "revolute"
-      },
-      {
-        "axis": {
-          "x": 0,
-          "y": 0,
-          "z": 1
-        },
-        "id": "link2_to_link3",
-        "max": 169.02254956359286,
-        "min": -57.29577951308232,
-        "parent": "link2",
-        "type": "revolute"
-      },
-      {
-        "axis": {
-          "x": 0,
-          "y": 0,
-          "z": 1
-        },
-        "id": "link3_to_link4",
-        "max": 90.0002104591497,
-        "min": -90.0002104591497,
-        "parent": "link3",
-        "type": "revolute"
-      },
-      {
-        "axis": {
-          "x": 0,
-          "y": 0,
-          "z": 1
-        },
-        "id": "link4_to_gripper",
-        "max": 180.0004209182994,
-        "min": -180.0004209182994,
-        "parent": "link4",
-        "type": "revolute"
-      }
-    ],
-    "links": [
-      {
-        "geometry": {
-          "type": "box",
-          "x": 260,
-          "y": 60,
-          "z": 80,
-          "r": 0,
-          "l": 0,
-          "translation": {
-            "x": 130,
-            "y": 0,
-            "z": 0
-          },
-          "orientation": {
-            "type": "quaternion",
-            "value": {
-              "W": 1,
-              "x": 0,
-              "y": 0,
-              "z": 0
-            }
-          },
-          "Label": ""
-        },
-        "id": "link2",
-        "orientation": {
-          "type": "euler_angles",
-          "value": {
-            "pitch": 0,
-            "roll": 0,
-            "yaw": 1.5708
-          }
-        },
-        "parent": "link1_to_link2",
-        "translation": {
-          "x": 250,
-          "y": 30,
-          "z": 0
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 1,
+          "X": 0,
+          "Y": 0,
+          "Z": 0
         }
       },
-      {
-        "geometry": {
-          "type": "box",
-          "x": 65,
-          "y": 55,
-          "z": 40,
-          "r": 0,
-          "l": 0,
-          "translation": {
-            "x": 0,
-            "y": -27.5,
-            "z": 0
-          },
-          "orientation": {
-            "type": "quaternion",
-            "value": {
-              "W": 1,
-              "x": 0,
-              "y": 0,
-              "z": 0
-            }
-          },
-          "Label": ""
-        },
-        "id": "link4",
-        "orientation": {
-          "type": "euler_angles",
-          "value": {
-            "pitch": 1.5708,
-            "roll": 1.5708,
-            "yaw": 0
-          }
-        },
-        "parent": "link3_to_link4",
+      "geometry": {
+        "type": "box",
+        "x": 90,
+        "y": 70,
+        "z": 70,
+        "r": 0,
+        "l": 0,
         "translation": {
-          "x": 0,
-          "y": -55,
-          "z": 0
+          "X": 0,
+          "Y": 0,
+          "Z": 35
+        },
+        "orientation": {
+          "type": ""
+        },
+        "Label": "base_link"
+      },
+      "parent": "world"
+    },
+    {
+      "id": "link1",
+      "translation": {
+        "X": 1.022295739206096e-15,
+        "Y": 7.703078050822167e-16,
+        "Z": 51.959
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 0.49999816339744846,
+          "X": -0.4999999999966269,
+          "Y": -0.4999999999966269,
+          "Z": -0.5000018366025516
         }
       },
-      {
-        "geometry": {
-          "type": "box",
-          "x": 45,
-          "y": 75,
-          "z": 65,
-          "r": 0,
-          "l": 0,
-          "translation": {
-            "x": 0,
-            "y": 0,
-            "z": 32.5
-          },
-          "orientation": {
-            "type": "quaternion",
-            "value": {
-              "W": 1,
-              "x": 0,
-              "y": 0,
-              "z": 0
-            }
-          },
-          "Label": ""
-        },
-        "id": "link1",
-        "orientation": {
-          "type": "euler_angles",
-          "value": {
-            "pitch": -1.5708,
-            "roll": -1.5708,
-            "yaw": 0
-          }
-        },
-        "parent": "base_link_to_link1",
+      "geometry": {
+        "type": "box",
+        "x": 45,
+        "y": 75,
+        "z": 65,
+        "r": 0,
+        "l": 0,
         "translation": {
-          "x": 0,
-          "y": 0,
-          "z": 55
+          "X": 0,
+          "Y": 0,
+          "Z": 32.5
+        },
+        "orientation": {
+          "type": ""
+        },
+        "Label": "link1"
+      },
+      "parent": "base_link_to_link1"
+    },
+    {
+      "id": "link2",
+      "translation": {
+        "X": 236.81500000000003,
+        "Y": 30.001999999999995,
+        "Z": 0
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 0.7071054825112364,
+          "X": 0,
+          "Y": 0,
+          "Z": 0.7071080798594735
         }
       },
-      {
-        "geometry": {
-          "type": "box",
-          "x": 30,
-          "y": 170,
-          "z": 40,
-          "r": 0,
-          "l": 0,
-          "translation": {
-            "x": 0,
-            "y": -85,
-            "z": 0
-          },
-          "orientation": {
-            "type": "quaternion",
-            "value": {
-              "W": 1,
-              "x": 0,
-              "y": 0,
-              "z": 0
-            }
-          },
-          "Label": ""
-        },
-        "id": "link3",
-        "orientation": {
-          "type": "euler_angles",
-          "value": {
-            "pitch": 0,
-            "roll": 0,
-            "yaw": 0
-          }
-        },
-        "parent": "link2_to_link3",
+      "geometry": {
+        "type": "box",
+        "x": 260,
+        "y": 60,
+        "z": 80,
+        "r": 0,
+        "l": 0,
         "translation": {
-          "x": 0,
-          "y": -160,
-          "z": 0
+          "X": 130,
+          "Y": 0,
+          "Z": 0
+        },
+        "orientation": {
+          "type": ""
+        },
+        "Label": "link2"
+      },
+      "parent": "link1_to_link2"
+    },
+    {
+      "id": "link3",
+      "translation": {
+        "X": 0,
+        "Y": -144.58599999999998,
+        "Z": 0
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 1,
+          "X": 0,
+          "Y": 0,
+          "Z": 0
         }
       },
-      {
-        "geometry": {
-          "type": "box",
-          "x": 90,
-          "y": 70,
-          "z": 70,
-          "r": 0,
-          "l": 0,
-          "translation": {
-            "x": 0,
-            "y": 0,
-            "z": 35
-          },
-          "orientation": {
-            "type": "quaternion",
-            "value": {
-              "W": 1,
-              "x": 0,
-              "y": 0,
-              "z": 0
-            }
-          },
-          "Label": ""
-        },
-        "id": "base_link",
-        "orientation": {
-          "type": "euler_angles",
-          "value": {
-            "pitch": 0,
-            "roll": 0,
-            "yaw": 0
-          }
-        },
-        "parent": "world",
+      "geometry": {
+        "type": "box",
+        "x": 30,
+        "y": 170,
+        "z": 40,
+        "r": 0,
+        "l": 0,
         "translation": {
-          "x": 0,
-          "y": 0,
-          "z": 70
+          "X": 0,
+          "Y": -85,
+          "Z": 0
+        },
+        "orientation": {
+          "type": ""
+        },
+        "Label": "link3"
+      },
+      "parent": "link2_to_link3"
+    },
+    {
+      "id": "link4",
+      "translation": {
+        "X": 15.147000000000002,
+        "Y": -53.653000000000006,
+        "Z": -9.88516837096645e-16
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 0.49999816339744846,
+          "X": 0.4999999999966269,
+          "Y": 0.4999999999966269,
+          "Z": -0.5000018366025516
         }
       },
-      {
-        "id": "tool",
-        "parent": "link4_to_gripper",
+      "geometry": {
+        "type": "box",
+        "x": 65,
+        "y": 55,
+        "z": 40,
+        "r": 0,
+        "l": 0,
         "translation": {
-          "x": 0,
-          "y": 0,
-          "z": 52.0
+          "X": 0,
+          "Y": -27.5,
+          "Z": 0
         },
         "orientation": {
-          "type": "euler_angles",
-          "value": {
-            "pitch": 0,
-            "roll": 0,
-            "yaw": 0
-          }
+          "type": ""
+        },
+        "Label": "link4"
+      },
+      "parent": "link3_to_link4"
+    },
+    {
+      "id": "link5",
+      "translation": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 1,
+          "X": 0,
+          "Y": 0,
+          "Z": 0
         }
-      }
-    ]
-  }
+      },
+      "parent": "link4_to_link5"
+    },
+    {
+      "id": "tool",
+      "translation": {
+        "X": 0,
+        "Y": 0,
+        "Z": 52.035
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 1,
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        }
+      },
+      "parent": "link5"
+    }
+  ],
+  "joints": [
+    {
+      "id": "base_link_to_link1",
+      "type": "revolute",
+      "parent": "base_link",
+      "axis": {
+        "X": 0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 180.0004209182994,
+      "min": -180.0004209182994
+    },
+    {
+      "id": "link1_to_link2",
+      "type": "revolute",
+      "parent": "link1",
+      "axis": {
+        "X": -0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 90.0002104591497,
+      "min": -90.0002104591497
+    },
+    {
+      "id": "link2_to_link3",
+      "type": "revolute",
+      "parent": "link2",
+      "axis": {
+        "X": 0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 169.02254956359286,
+      "min": -57.29577951308232
+    },
+    {
+      "id": "link3_to_link4",
+      "type": "revolute",
+      "parent": "link3",
+      "axis": {
+        "X": 0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 90.0002104591497,
+      "min": -90.0002104591497
+    },
+    {
+      "id": "link4_to_link5",
+      "type": "revolute",
+      "parent": "link4",
+      "axis": {
+        "X": 0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 180.0004209182994,
+      "min": -180.0004209182994
+    }
+  ]
+}
