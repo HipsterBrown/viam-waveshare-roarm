@@ -1,6 +1,9 @@
 package roarm
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Link health counters. Deliberately small: cumulative totals, no sliding
 // window, and nothing in the control path branches on them. They answer one
@@ -70,4 +73,25 @@ func (c *Controller) retryCount() int {
 func (c *Controller) noteError(err error) {
 	c.health.LastError = err.Error()
 	c.health.LastErrorAt = time.Now()
+}
+
+// noteSettle records how a settle ended. The outcome counters are what make a
+// bench run comparable across sessions: a link that used to arrive every time
+// and now stops short has changed, even when every individual move looked
+// acceptable.
+func (c *Controller) noteSettle(res SettleResult, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case err == nil && res.Outcome == SettleArrived:
+		c.health.SettlesArrived++
+	case err == nil:
+		c.health.SettlesStopped++
+	case errors.Is(err, ErrArmDidNotMove):
+		c.health.NeverMoved++
+		c.noteError(err)
+	default:
+		c.health.SettleTimeouts++
+		c.noteError(err)
+	}
 }

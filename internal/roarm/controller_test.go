@@ -762,13 +762,34 @@ func TestControllerNoFeedback_Fallbacks(t *testing.T) {
 	if err != nil || moving {
 		t.Fatalf("expected false, nil; got %v %v", moving, err)
 	}
-	start := time.Now()
-	pos, err := c.WaitUntilSettled(context.Background(), []float64{0, 0, 0, 0, 0, 0}, ArmMask, 200*time.Millisecond)
-	if err != nil || pos != nil {
-		t.Fatalf("expected nil, nil; got %v %v", pos, err)
+	// Without feedback there is nothing to poll, so the settle sleeps the
+	// modelled duration of the commanded move and reports an arrival with no
+	// positions. One degree at the default profile is acceleration-limited:
+	// 2*sqrt(travel/a) is about 200 ms.
+	req := SettleRequest{
+		Start:         []float64{0, 0, 0, 0, 0, 0},
+		Target:        []float64{math.Pi / 180, 0, 0, 0, 0, 0},
+		Mask:          ArmMask,
+		SpeedUnits:    SpeedToUnits(DefaultSpeedDegsPerSec),
+		AccUnits:      AccelToUnits(DefaultAccelDegsPerSecSq),
+		RequireMotion: true,
 	}
-	if time.Since(start) < 90*time.Millisecond {
-		t.Fatal("expected the plain time estimate to be slept")
+	// Derived, not a literal: a hardcoded floor would quietly go vacuous if
+	// the duration model ever shortened.
+	plan, err := planSettle(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	res, err := c.WaitUntilSettled(context.Background(), req)
+	if err != nil || res.Positions != nil {
+		t.Fatalf("expected an arrival with no positions; got %+v %v", res, err)
+	}
+	if res.Outcome != SettleArrived {
+		t.Fatalf("outcome %v, want arrived", res.Outcome)
+	}
+	if el := time.Since(start); el < plan.Duration {
+		t.Fatalf("expected the modelled %v to be slept, only took %v", plan.Duration, el)
 	}
 }
 

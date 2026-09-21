@@ -133,6 +133,9 @@ type Controller struct {
 	resetFailures int
 	// health holds the link health counters. See health.go.
 	health HealthSnapshot
+	// clock is the wall clock a settle polls against. The zero value is the
+	// real clock; tests substitute it to drive settle timing.
+	clock Clock
 }
 
 // Config represents the configuration for the RoArm controller
@@ -587,18 +590,54 @@ func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, err
 	}
 }
 
-// WaitUntilSettled blocks until the masked joints reach target or stop
-// moving. See settle.go. On a transport that cannot read feedback it sleeps
-// the plain time estimate (half the timeout) and returns nil positions.
-func (c *Controller) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
+// WaitUntilSettled blocks until the masked joints reach their target or stop
+// moving, deriving its own timing from the request (see settle.go). It owns
+// the warnings, because it holds the logger and the retry counters.
+func (c *Controller) WaitUntilSettled(ctx context.Context, req SettleRequest) (SettleResult, error) {
 	if !c.canReadFeedback {
-		return nil, SleepCtx(ctx, timeout/2)
+		// No feedback to poll: sleep the modelled duration, which is a closer
+		// estimate than half the deadline (the deadline carries a 2x margin).
+		plan, err := planSettle(req)
+		if err != nil {
+			return SettleResult{}, err
+		}
+		return SettleResult{Outcome: SettleArrived, Elapsed: plan.Duration, Deadline: plan.Deadline}, SleepCtx(ctx, plan.Duration)
 	}
-	pos, stalled, err := waitUntilSettled(ctx, c.GetJointRadians, SleepCtx, target, mask, timeout)
-	if stalled {
-		c.logger.Debugf("settle: joints stopped short of target (at %v, wanted %v)", pos, target)
+
+	before := c.retryCount()
+	res, err := waitUntilSettled(ctx, c.GetJointRadians, c.clock, req)
+	res.Retries = c.retryCount() - before
+	c.noteSettle(res, err)
+	if err != nil {
+		return res, err
 	}
-	return pos, err
+	if res.Outcome == SettleStopped {
+		remaining := MaxTravel(res.Positions, req.Target, req.Mask)
+		c.logger.Warnf("the arm stopped %.1f deg short of its target after %v (%d polls); it may be loaded, obstructed, or at a joint limit",
+			remaining*180/math.Pi, res.Elapsed.Round(time.Millisecond), res.Polls)
+	}
+	c.warnSettleTiming(res)
+	return res, nil
+}
+
+// warnSettleTiming emits at most one timing warning per settle, in priority
+// order: a settle near its budget means the arm is slower than the profile it
+// was commanded with; a read slower than the poll interval means settle timing
+// is dominated by read latency; retries mean the link is lossy.
+func (c *Controller) warnSettleTiming(res SettleResult) {
+	switch {
+	case res.Elapsed > time.Duration(settleBudgetWarnFraction*float64(res.Deadline)):
+		c.logger.Warnf("the settle used %v of its %v budget (%d polls); the arm is slower than its commanded profile implies, "+
+			"so speed_degs_per_sec or acceleration_degs_per_sec_per_sec may not match reality",
+			res.Elapsed.Round(time.Millisecond), res.Deadline.Round(time.Millisecond), res.Polls)
+	case res.SlowestRead > settlePollInterval:
+		c.logger.Warnf("the slowest position read in this settle took %v, longer than the %v poll interval; "+
+			"settle timing is dominated by read latency and the effective poll rate is below the configured one",
+			res.SlowestRead.Round(time.Millisecond), settlePollInterval)
+	case res.Retries > 0:
+		c.logger.Warnf("%d of %d position reads in this settle needed a retry; see the comms_health command",
+			res.Retries, res.Polls)
+	}
 }
 
 // IsMoving compares two position samples IsMovingProbeGap apart. On a
