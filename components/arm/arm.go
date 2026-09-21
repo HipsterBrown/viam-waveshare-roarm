@@ -172,7 +172,7 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		return nil, fmt.Errorf("failed to create RoArm controller: %w", err)
 	}
 
-	model, err := geometry.ArmModel("roarm_m3")
+	model, err := geometry.ArmModel(geometry.CollisionBox, "roarm_m3")
 	if err != nil {
 		_ = controller.Close(ctx) // Clean up on error
 		return nil, fmt.Errorf("failed to create kinematic model: %w", err)

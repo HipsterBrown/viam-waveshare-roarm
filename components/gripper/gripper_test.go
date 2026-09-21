@@ -31,7 +31,7 @@ func newTestGripper(t *testing.T, fa *testfake.FakeArmRPC) *roarmM3Gripper {
 
 func mustBuildGripperModel(t *testing.T) referenceframe.Model {
 	t.Helper()
-	m, err := geometry.GripperModel("test-gripper")
+	m, err := geometry.GripperModel(geometry.CollisionBox, "test-gripper")
 	if err != nil {
 		t.Fatal(err)
 	}

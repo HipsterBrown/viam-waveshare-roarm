@@ -106,7 +106,7 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		return nil, fmt.Errorf("gripper %s: could not find arm %q in deps: %w", conf.ResourceName(), cfg.Arm, err)
 	}
 
-	model, err := geometry.GripperModel(conf.ResourceName().ShortName())
+	model, err := geometry.GripperModel(geometry.CollisionBox, conf.ResourceName().ShortName())
 	if err != nil {
 		return nil, fmt.Errorf("failed to build gripper kinematic model: %w", err)
 	}

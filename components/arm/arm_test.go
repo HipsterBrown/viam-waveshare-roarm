@@ -20,7 +20,7 @@ import (
 
 func mustLoadModel(t *testing.T) referenceframe.Model {
 	t.Helper()
-	m, err := geometry.ArmModel("roarm_m3")
+	m, err := geometry.ArmModel(geometry.CollisionBox, "roarm_m3")
 	if err != nil {
 		t.Fatal(err)
 	}
