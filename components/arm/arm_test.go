@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	rdkarm "go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/operation"
 	"go.viam.com/rdk/referenceframe"
@@ -477,6 +478,25 @@ func TestArmMoveThroughJointPositions(t *testing.T) {
 	}
 	if err := r.MoveThroughJointPositions(context.Background(), positions, nil, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// MoveThroughJointPositions must route the resolved profile all the way to the
+// write and the settle. Delegating to the public MoveToJointPositions
+// re-snapshots the configured defaults and discards it.
+func TestMoveThroughJointPositionsRoutesMoveOptionsToTheWrite(t *testing.T) {
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{T: 1051, G: 3.0}}
+	r := newTestArm(t, fc) // configured defaults: 50 deg/s, 100 deg/s^2
+	opts := &rdkarm.MoveOptions{MaxVelRads: 10 * math.Pi / 180}
+	if err := r.MoveThroughJointPositions(context.Background(),
+		[][]referenceframe.Input{{0.2, 0, 0, 0, 0}}, opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := fc.LastSpeed; got != roarm.SpeedToUnits(10) {
+		t.Fatalf("the write used speed %d units, want %d (10 deg/s)", got, roarm.SpeedToUnits(10))
+	}
+	if got := fc.LastSettleRequest.SpeedUnits; got != roarm.SpeedToUnits(10) {
+		t.Fatalf("the settle got speed %d units, want the same %d the write used", got, roarm.SpeedToUnits(10))
 	}
 }
 

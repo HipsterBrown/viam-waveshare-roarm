@@ -262,6 +262,17 @@ func (r *roarmM3) MoveToPosition(ctx context.Context, pose spatialmath.Pose, ext
 }
 
 func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenceframe.Input, extra map[string]interface{}) error {
+	r.mu.Lock()
+	speed, acc := r.defaultSpeed, r.defaultAcc
+	r.mu.Unlock()
+	return r.moveToJointPositionsAt(ctx, positions, speed, acc)
+}
+
+// moveToJointPositionsAt is MoveToJointPositions with the speed and
+// acceleration (firmware units) supplied by the caller instead of snapshotted
+// from the configured defaults, so MoveThroughJointPositions can route a
+// resolved MoveOptions profile all the way to the write and the settle.
+func (r *roarmM3) moveToJointPositionsAt(ctx context.Context, positions []referenceframe.Input, speed, acc int) error {
 	if r.closed.Load() {
 		return errClosed
 	}
@@ -270,11 +281,9 @@ func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenc
 	r.opInFlight.Store(true)
 	defer r.opInFlight.Store(false)
 
-	// Snapshot motion params under the mutex so concurrent Reconfigure /
-	// DoCommand writers can't race with us reading them here.
+	// Snapshot jointLimits under the mutex so a concurrent Reconfigure can't
+	// race with us reading it here.
 	r.mu.Lock()
-	speed := r.defaultSpeed
-	acc := r.defaultAcc
 	jointLimits := r.jointLimits
 	r.mu.Unlock()
 
@@ -340,11 +349,16 @@ func (r *roarmM3) MoveThroughJointPositions(ctx context.Context, positions [][]r
 	if r.closed.Load() {
 		return errClosed
 	}
-	if options != nil {
-		r.logger.Debug("MoveOptions are not yet honored by this module (sub-project 3); using configured speed and acceleration")
+	r.mu.Lock()
+	defSpeed, defAcc, joints := roarm.SpeedFromUnits(r.defaultSpeed), roarm.AccelFromUnits(r.defaultAcc), len(r.jointLimits)
+	r.mu.Unlock()
+	speedDegs, accDegs, err := roarm.ResolveMoveProfile(options, joints, defSpeed, defAcc, r.logger)
+	if err != nil {
+		return err
 	}
+	speed, acc := roarm.SpeedToUnits(speedDegs), roarm.AccelToUnits(accDegs)
 	for _, jointPositions := range positions {
-		if err := r.MoveToJointPositions(ctx, jointPositions, extra); err != nil {
+		if err := r.moveToJointPositionsAt(ctx, jointPositions, speed, acc); err != nil {
 			return err
 		}
 
