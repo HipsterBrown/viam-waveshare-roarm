@@ -38,9 +38,18 @@ The following attributes are available for the arm component:
 | `serial_timeout`                    | duration         | Optional     | Serial communication timeout. Accepts a duration string (e.g. `"1s"`) or integer nanoseconds. Default is `1s`.|
 | `speed_degs_per_sec`                | float32          | Optional     | The rotational speed for arm movements (must be between 3 and 180). Default is `50` degrees/second. Validated at config time.  |
 | `acceleration_degs_per_sec_per_sec` | float32          | Optional     | The acceleration for arm movements (must be between 10 and 500). Default is `100` degrees/second^2. Validated at config time.  |
+| `orientation_tolerance_deg`         | float64          | Optional     | The approach-axis cone half-angle, in degrees, that `MoveToPosition` plans against. Default is `30`. Must be in `[0, 180]`. An explicit `0` means the default, **not** an exact orientation match: a zero-leeway goal region is one no inverse-kinematics solution realistically lands inside, so every move would fail to plan. For a near-exact orientation pass a small non-zero value. Validated at config time. |
+| `position_tolerance_mm`             | float64          | Optional     | The per-axis positional leeway of the goal region, in millimeters. Default is `1.0`. Must not be negative; an explicit `0` means the default, for the same reason as above. This is a box, not a radius, so the worst-case corner is sqrt(3) times this value. Validated at config time. |
 | `collision_geometry`                | string           | Optional     | `box` (default) or `mesh`. `box` uses one axis-aligned box per link sized from the CAD mesh; `mesh` uses a tighter envelope per link: the CAD mesh cut into 6 slabs along its length, each replaced by a 26-sided bounding polytope that chamfers the corners and edges the mesh does not reach, for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
 
 *Either `host` or `port` must be specified, but not both.
+
+> **Approach axis on `MoveToPosition`.** The Cartesian goal is an approach-axis cone: the planner must reach the goal point with the tool's approach axis within `orientation_tolerance_deg` of the requested orientation, while roll about that axis is left free. Earlier versions ignored orientation entirely, so a goal that planned before may now fail to plan; widen either tolerance, or use one of the escape hatches below. Goal regions need viam-server 0.127.0 or newer; older servers silently ignore them and plan against the exact pose.
+>
+> Two `extra` keys override the cone, and passing both is an error:
+>
+> - `{"goal_metric_type": "position_only"}` restores the old orientation-free behavior. No goal region is sent, because `position_only` scores orientation at zero weight.
+> - `{"pose_cloud": {"x": 2, "y": 2, "z": 2, "ox": 1, "oy": 1, "oz": 0.13, "theta": 180}}` sends a goal region verbatim. Keys are all lowercase and any of the seven may be omitted, but an omitted leeway is zero, which is effectively an exact match on that axis.
 
 > **Motion completion.** Every move returns once the firmware's position feedback shows the joints within about 1 degree of the target, or stopped moving (an obstacle), rather than after a computed delay. `IsMoving` compares two feedback samples 40 ms apart and reports true while a move call is in flight.
 >

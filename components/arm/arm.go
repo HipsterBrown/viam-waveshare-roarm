@@ -20,6 +20,7 @@ import (
 	"go.viam.com/utils/rpc"
 
 	"waveshareroarm/internal/geometry"
+	"waveshareroarm/internal/planning"
 	"waveshareroarm/internal/roarm"
 )
 
@@ -59,6 +60,16 @@ type RoArmM3Config struct {
 
 	Motion string `json:"motion,omitempty"`
 
+	// OrientationToleranceDeg is the approach-axis cone half-angle in degrees.
+	// Zero or unset means the default (30); an explicit 0 does NOT mean
+	// "demand an exact match", because a zero-leeway goal cloud is one no IK
+	// solution realistically lands inside. For a near-exact orientation pass a
+	// small non-zero value, or a raw pose_cloud in extra.
+	OrientationToleranceDeg float64 `json:"orientation_tolerance_deg,omitempty"`
+	// PositionToleranceMM is the per-axis positional leeway of the goal cloud.
+	// Zero or unset means the default (1.0).
+	PositionToleranceMM float64 `json:"position_tolerance_mm,omitempty"`
+
 	// CollisionGeometry selects the collision shapes of the kinematic model:
 	// "" or "box" for one bounding box per link, "mesh" for per-slab bounding-polytope envelopes.
 	CollisionGeometry string `json:"collision_geometry,omitempty"`
@@ -90,6 +101,10 @@ func (cfg *RoArmM3Config) Validate(path string) ([]string, []string, error) {
 	}
 
 	if err := geometry.ValidateCollision(cfg.CollisionGeometry); err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	if err := planning.ValidateGoalCloudTolerances(cfg.OrientationToleranceDeg, cfg.PositionToleranceMM); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 
@@ -133,6 +148,9 @@ type roarmM3 struct {
 	// Motion configuration
 	defaultSpeed int
 	defaultAcc   int
+
+	// goalCloud is the resolved approach-axis cone MoveToPosition plans against.
+	goalCloud planning.GoalCloudConfig
 
 	closed atomic.Bool
 	// opInFlight is true between the start and end of a commanded move, so
@@ -201,6 +219,7 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		jointLimits:  jointLimitsFromModel(model),
 		defaultSpeed: defaultSpeed,
 		defaultAcc:   defaultAcc,
+		goalCloud:    planning.ResolveGoalCloudConfig(conf.OrientationToleranceDeg, conf.PositionToleranceMM, logger),
 		motion:       ms,
 	}
 
@@ -245,20 +264,25 @@ func (r *roarmM3) MoveToPosition(ctx context.Context, pose spatialmath.Pose, ext
 		return errClosed
 	}
 
-	planExtra := map[string]any{"goal_metric_type": "position_only"}
-	for k, v := range extra {
-		planExtra[k] = v
+	r.mu.Lock()
+	goalCfg := r.goalCloud
+	r.mu.Unlock()
+
+	dest, planExtra, path, err := planning.BuildMoveDestination(
+		fmt.Sprintf("%v_origin", r.Name().Name), pose, goalCfg, extra)
+	if err != nil {
+		return err
 	}
 
-	_, err := r.motion.Move(
+	_, err = r.motion.Move(
 		ctx,
 		motion.MoveReq{
 			ComponentName: r.Name().Name,
-			Destination:   referenceframe.NewPoseInFrame(fmt.Sprintf("%v_origin", r.Name().Name), pose),
+			Destination:   dest,
 			Extra:         planExtra,
 		},
 	)
-	return err
+	return planning.WrapMoveErr(err, path, goalCfg)
 }
 
 func (r *roarmM3) MoveToJointPositions(ctx context.Context, positions []referenceframe.Input, extra map[string]interface{}) error {
@@ -731,6 +755,7 @@ func (r *roarmM3) Reconfigure(ctx context.Context, deps resource.Dependencies, c
 
 	r.defaultSpeed = defaultSpeed
 	r.defaultAcc = defaultAcc
+	r.goalCloud = planning.ResolveGoalCloudConfig(newConf.OrientationToleranceDeg, newConf.PositionToleranceMM, r.logger)
 	r.cfg = newConf
 
 	r.logger.Infof("RoArm-M3 reconfigured with speed: %.1f deg/s (internal: %d), acceleration: %.1f deg/s² (internal: %d)",

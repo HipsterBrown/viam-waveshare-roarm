@@ -22,6 +22,7 @@ import (
 	"go.viam.com/rdk/spatialmath"
 
 	"waveshareroarm/internal/geometry"
+	"waveshareroarm/internal/planning"
 	"waveshareroarm/internal/roarm"
 )
 
@@ -59,6 +60,16 @@ type SimulatedArmConfig struct {
 	// Defaults to "builtin".
 	Motion string `json:"motion,omitempty"`
 
+	// OrientationToleranceDeg is the approach-axis cone half-angle in degrees.
+	// Zero or unset means the default (30); an explicit 0 does NOT mean
+	// "demand an exact match", because a zero-leeway goal cloud is one no IK
+	// solution realistically lands inside. For a near-exact orientation pass a
+	// small non-zero value, or a raw pose_cloud in extra.
+	OrientationToleranceDeg float64 `json:"orientation_tolerance_deg,omitempty"`
+	// PositionToleranceMM is the per-axis positional leeway of the goal cloud.
+	// Zero or unset means the default (1.0).
+	PositionToleranceMM float64 `json:"position_tolerance_mm,omitempty"`
+
 	// SimulateTime controls whether a background goroutine advances the arm's position in
 	// real time. Defaults to true. Tests set it false to drive the simulated clock
 	// deterministically via updateForTime.
@@ -76,6 +87,9 @@ func (cfg *SimulatedArmConfig) Validate(path string) ([]string, []string, error)
 		return nil, nil, fmt.Errorf("%s: speed_degs_per_sec must not be negative, got %.1f", path, cfg.SpeedDegsPerSec)
 	}
 	if err := geometry.ValidateCollision(cfg.CollisionGeometry); err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := planning.ValidateGoalCloudTolerances(cfg.OrientationToleranceDeg, cfg.PositionToleranceMM); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return []string{motion.Named(cfg.motionName()).String()}, nil, nil
@@ -129,6 +143,10 @@ type simulatedArm struct {
 	// speed is the joint travel speed in radians per second.
 	speed float64
 
+	// goalCloud is the resolved approach-axis cone MoveToPosition plans against. The
+	// simulated arm is AlwaysRebuild, so the constructor is its only writer.
+	goalCloud planning.GoalCloudConfig
+
 	// clock schedules streamed trajectory points. Zero value is the real clock; tests only.
 	clock roarm.Clock
 
@@ -180,6 +198,7 @@ func newSimulatedArm(
 		model:      model,
 		motion:     ms,
 		speed:      speedDegsPerSec * math.Pi / 180.0,
+		goalCloud:  planning.ResolveGoalCloudConfig(conf.OrientationToleranceDeg, conf.PositionToleranceMM, logger),
 		cancelCtx:  cancelCtx,
 		cancelFunc: cancelFunc,
 		currInputs: make([]float64, len(model.DoF())),
@@ -296,24 +315,26 @@ func (s *simulatedArm) EndPosition(ctx context.Context, extra map[string]interfa
 }
 
 // MoveToPosition moves the arm's end effector to the target pose using the motion
-// service, matching the hardware model: the goal is position-only, so the planner is
-// free to choose the tool orientation that reaches it.
+// service, matching the hardware model: the goal is an approach-axis cone built from
+// orientation_tolerance_deg and position_tolerance_mm, so the tool's approach direction is
+// constrained while roll stays free.
 func (s *simulatedArm) MoveToPosition(ctx context.Context, pose spatialmath.Pose, extra map[string]interface{}) error {
 	if s.motion == nil {
 		return errors.New("MoveToPosition requires a motion service, which was not available at construction")
 	}
 
-	planExtra := map[string]any{"goal_metric_type": "position_only"}
-	for k, v := range extra {
-		planExtra[k] = v
+	dest, planExtra, path, err := planning.BuildMoveDestination(
+		fmt.Sprintf("%v_origin", s.name.Name), pose, s.goalCloud, extra)
+	if err != nil {
+		return err
 	}
 
-	_, err := s.motion.Move(ctx, motion.MoveReq{
+	_, err = s.motion.Move(ctx, motion.MoveReq{
 		ComponentName: s.name.Name,
-		Destination:   referenceframe.NewPoseInFrame(fmt.Sprintf("%v_origin", s.name.Name), pose),
+		Destination:   dest,
 		Extra:         planExtra,
 	})
-	return err
+	return planning.WrapMoveErr(err, path, s.goalCloud)
 }
 
 // MoveToJointPositions starts a move to the given joint configuration and blocks until it

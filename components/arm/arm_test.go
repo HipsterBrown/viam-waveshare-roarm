@@ -8,14 +8,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/geo/r3"
 	rdkarm "go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/operation"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
+	"go.viam.com/rdk/services/motion"
 	"go.viam.com/rdk/spatialmath"
 
 	"waveshareroarm/internal/geometry"
+	"waveshareroarm/internal/planning"
 	"waveshareroarm/internal/roarm"
 	"waveshareroarm/internal/testfake"
 )
@@ -928,5 +931,214 @@ func TestBridgeSetGripperRad_NoWaitNeedsNoFeedback(t *testing.T) {
 	}
 	if fc.SettleCalls != 0 {
 		t.Fatalf("wait=false must not settle, got %d settle calls", fc.SettleCalls)
+	}
+}
+
+// fakeMotion is the smallest motion.Service that records the last MoveReq. The embedded
+// interface is nil: only Move is ever called, and any other method panicking is the
+// correct answer for a stub.
+type fakeMotion struct {
+	motion.Service
+	last    motion.MoveReq
+	calls   int
+	moveErr error
+}
+
+func (f *fakeMotion) Move(ctx context.Context, req motion.MoveReq) (bool, error) {
+	f.calls++
+	f.last = req
+	if f.moveErr != nil {
+		return false, f.moveErr
+	}
+	return true, nil
+}
+
+// newPlanningArm is newTestArm plus the two things MoveToPosition needs: a name (the
+// destination frame is derived from it) and a motion service to plan against.
+func newPlanningArm(t *testing.T, cfg *RoArmM3Config) (*roarmM3, *fakeMotion) {
+	t.Helper()
+	r := newTestArm(t, &testfake.FakeController{})
+	r.name = rdkarm.Named("myarm")
+	fm := &fakeMotion{}
+	r.motion = fm
+	r.cfg = cfg
+	r.goalCloud = planning.ResolveGoalCloudConfig(cfg.OrientationToleranceDeg, cfg.PositionToleranceMM, r.logger)
+	return r, fm
+}
+
+var testGoalPose = spatialmath.NewPose(
+	r3.Vector{X: 300, Y: 0, Z: 200},
+	&spatialmath.OrientationVectorDegrees{OZ: -1},
+)
+
+// Row 1: with no extra, the destination carries the cone built from the config, and no
+// goal_metric_type reaches the planner (the hardcoded position_only is gone).
+func TestMoveToPositionSendsTheConfiguredCone(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{OrientationToleranceDeg: 15, PositionToleranceMM: 2})
+	if err := r.MoveToPosition(context.Background(), testGoalPose, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.Parent() != "myarm_origin" {
+		t.Errorf("destination frame = %q, want %q", dest.Parent(), "myarm_origin")
+	}
+	if dest.GoalCloud == nil {
+		t.Fatal("no goal cloud on the destination: orientation would still be ignored")
+	}
+	// The configured tolerances, not the defaults, must be what reaches the planner.
+	if dest.GoalCloud.X != 2 || dest.GoalCloud.Y != 2 || dest.GoalCloud.Z != 2 {
+		t.Errorf("positional leeway = (%v, %v, %v), want 2 on each axis",
+			dest.GoalCloud.X, dest.GoalCloud.Y, dest.GoalCloud.Z)
+	}
+	if want := 1 - math.Cos(15*math.Pi/180); math.Abs(dest.GoalCloud.OZ-want) > 1e-12 {
+		t.Errorf("OZ = %v, want %v (a 15deg cone)", dest.GoalCloud.OZ, want)
+	}
+	if _, ok := fm.last.Extra["goal_metric_type"]; ok {
+		t.Error("goal_metric_type must no longer be sent: the cone replaces position_only")
+	}
+}
+
+// An unset pair resolves to the package defaults rather than a zero-leeway cloud no IK
+// solution lands inside.
+func TestMoveToPositionDefaultsTheConeWhenUnset(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{})
+	if err := r.MoveToPosition(context.Background(), testGoalPose, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	// Guard before dereferencing: a missing cloud is the exact regression this test
+	// catches, and a nil deref would take the whole test binary down with it.
+	if dest.GoalCloud == nil {
+		t.Fatal("no goal cloud on the destination: orientation would still be ignored")
+	}
+	if dest.GoalCloud.X != 1.0 {
+		t.Errorf("positional leeway = %v, want the 1.0mm default", dest.GoalCloud.X)
+	}
+	if want := 1 - math.Cos(30*math.Pi/180); math.Abs(dest.GoalCloud.OZ-want) > 1e-12 {
+		t.Errorf("OZ = %v, want %v (the 30deg default cone)", dest.GoalCloud.OZ, want)
+	}
+}
+
+// Row 2: the caller's goal_metric_type wins. No cloud is sent, and the key reaches the
+// planner so the old position_only behavior is still available.
+func TestMoveToPositionHonorsGoalMetricTypeInExtra(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{})
+	extra := map[string]interface{}{"goal_metric_type": "position_only"}
+	if err := r.MoveToPosition(context.Background(), testGoalPose, extra); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.GoalCloud != nil {
+		t.Error("no cloud may be sent with position_only: orientScale=0 makes its leeways meaningless")
+	}
+	if got := fm.last.Extra["goal_metric_type"]; got != "position_only" {
+		t.Errorf("goal_metric_type = %v, want it forwarded to the planner", got)
+	}
+}
+
+// Row 3: a raw pose_cloud replaces the cone, and pose_cloud is consumed rather than
+// forwarded (it is not a planner key).
+func TestMoveToPositionHonorsPoseCloudInExtra(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{})
+	extra := map[string]interface{}{
+		"pose_cloud": map[string]interface{}{"x": 5.0, "oz": 0.25, "theta": 10.0},
+	}
+	if err := r.MoveToPosition(context.Background(), testGoalPose, extra); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.GoalCloud == nil {
+		t.Fatal("the caller's pose_cloud must reach the destination")
+	}
+	if dest.GoalCloud.X != 5.0 || dest.GoalCloud.OZ != 0.25 || dest.GoalCloud.Theta != 10.0 {
+		t.Errorf("goal cloud = %+v, want the caller's cloud verbatim", *dest.GoalCloud)
+	}
+	if _, ok := fm.last.Extra["pose_cloud"]; ok {
+		t.Error("pose_cloud is consumed here, not a planner key")
+	}
+}
+
+// Row 4: both keys together are incoherent, so the move is rejected before the planner is
+// ever called.
+func TestMoveToPositionRejectsBothExtraKeys(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{})
+	err := r.MoveToPosition(context.Background(), testGoalPose, map[string]interface{}{
+		"pose_cloud":       map[string]interface{}{"oz": 0.5},
+		"goal_metric_type": "position_only",
+	})
+	if err == nil {
+		t.Fatal("expected an error for pose_cloud plus goal_metric_type")
+	}
+	if !strings.Contains(err.Error(), "pose_cloud") || !strings.Contains(err.Error(), "goal_metric_type") {
+		t.Errorf("the error must name both offending keys: %v", err)
+	}
+	if fm.calls != 0 {
+		t.Errorf("motion.Move was called %d times; an incoherent request must not reach the planner", fm.calls)
+	}
+}
+
+// A planning failure on the cone path must point the caller at both tolerances and at the
+// escape hatch, since this is a breaking change: goals that planned under position_only
+// may now fail.
+func TestMoveToPositionFailureNamesBothTolerances(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{OrientationToleranceDeg: 15, PositionToleranceMM: 2})
+	fm.moveErr = errors.New("no IK solution")
+	err := r.MoveToPosition(context.Background(), testGoalPose, nil)
+	if err == nil {
+		t.Fatal("expected the planner's error to propagate")
+	}
+	for _, want := range []string{
+		"orientation_tolerance_deg=15", "position_tolerance_mm=2",
+		"no IK solution", "goal_metric_type", "0.127.0",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must mention %q: %v", want, err)
+		}
+	}
+}
+
+// Reconfigure must pick the tolerances up: they sit beside the other reconfigurable motion
+// settings, so a config edit that does not rebuild the arm still has to take effect.
+func TestArmReconfigurePicksUpGoalCloudTolerances(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{Host: "1.2.3.4"})
+	conf := resource.Config{
+		Name: "arm",
+		ConvertedAttributes: &RoArmM3Config{
+			Host:                    "1.2.3.4",
+			OrientationToleranceDeg: 45,
+			PositionToleranceMM:     3,
+		},
+	}
+	if err := r.Reconfigure(context.Background(), nil, conf); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.MoveToPosition(context.Background(), testGoalPose, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.GoalCloud.X != 3 {
+		t.Errorf("positional leeway = %v, want the reconfigured 3", dest.GoalCloud.X)
+	}
+	if want := 1 - math.Cos(45*math.Pi/180); math.Abs(dest.GoalCloud.OZ-want) > 1e-12 {
+		t.Errorf("OZ = %v, want %v (the reconfigured 45deg cone)", dest.GoalCloud.OZ, want)
+	}
+}
+
+func TestArmValidateRejectsBadGoalCloudTolerances(t *testing.T) {
+	for name, cfg := range map[string]*RoArmM3Config{
+		"orientation above 180": {Host: "h", OrientationToleranceDeg: 181},
+		"negative orientation":  {Host: "h", OrientationToleranceDeg: -1},
+		"negative position":     {Host: "h", PositionToleranceMM: -1},
+		"NaN orientation":       {Host: "h", OrientationToleranceDeg: math.NaN()},
+		"NaN position":          {Host: "h", PositionToleranceMM: math.NaN()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := cfg.Validate("p"); err == nil {
+				t.Error("want a validation error, got nil")
+			}
+		})
+	}
+	if _, _, err := (&RoArmM3Config{Host: "h", OrientationToleranceDeg: 180, PositionToleranceMM: 0}).Validate("p"); err != nil {
+		t.Errorf("180 degrees and an unset position tolerance are both legal: %v", err)
 	}
 }
