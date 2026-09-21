@@ -65,7 +65,7 @@ type SimulatedArmConfig struct {
 	SimulateTime *bool `json:"simulate_time,omitempty"`
 
 	// CollisionGeometry selects the collision shapes of the kinematic model:
-	// "" or "box" for bounding boxes, "mesh" for the decimated link hulls.
+	// "" or "box" for one bounding box per link, "mesh" for slab-box envelopes.
 	CollisionGeometry string `json:"collision_geometry,omitempty"`
 }
 

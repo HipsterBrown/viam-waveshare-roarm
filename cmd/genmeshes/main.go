@@ -20,7 +20,7 @@ import (
 func main() {
 	ws := flag.String("roarm-ws", "", "path to a checkout of github.com/waveshareteam/roarm_ws (branch ros2-humble)")
 	out := flag.String("out", "internal/geometry", "output directory (the module's geometry package)")
-	collisionTriangles := flag.Int("collision-triangles", 200, "hull triangle budget per collision mesh")
+	collisionTriangles := flag.Int("collision-triangles", 200, "triangle budget per collision envelope (12 per slab)")
 	flag.Parse()
 	if *ws == "" {
 		flag.Usage()
@@ -45,7 +45,7 @@ func main() {
 
 	boxes := map[string]linkGeometry{}
 	meshes := map[string]linkGeometry{}
-	fmt.Printf("\n%-10s %8s %8s %8s %8s  %s\n", "link", "tris", "hull", "glb", "ply", "box centre / size (mm)   [old]")
+	fmt.Printf("\n%-10s %8s %8s %8s %8s  %s\n", "link", "tris", "env", "glb", "ply", "box centre / size (mm)   [old]")
 	for _, link := range armLinks {
 		tris, err := readSTLFile(filepath.Join(meshDir, link+".stl"))
 		if err != nil {
@@ -65,16 +65,17 @@ func main() {
 		if err := os.WriteFile(filepath.Join(outMeshes, link+".glb"), glb, 0o644); err != nil {
 			log.Fatal(err)
 		}
-		hull, err := toMesh(centred, link).ConservativeDecimate(*collisionTriangles)
-		if err != nil {
-			log.Fatal(err)
+		boxesForLink := slabBoxes(centred, *collisionTriangles/12)
+		if n, gap := coverage(pos, boxesForLink, coverageTolMM); n > 0 {
+			log.Fatalf("%s: collision envelope leaves %d of %d vertices outside it (worst %.1f mm)", link, n, len(pos), gap)
 		}
+		envelope := toMesh(boxesTris(boxesForLink), link)
 		// The collision PLY travels inline in roarm_m3_mesh.json; no standalone file.
-		ply := hull.TrianglesToPLYBytes(false)
+		ply := envelope.TrianglesToPLYBytes(false)
 		boxes[link] = linkGeometry{Center: c, Size: hi.Sub(lo), Label: link}
 		meshes[link] = linkGeometry{Center: c, PLY: ply, Label: link}
 		o := old[link]
-		fmt.Printf("%-10s %8d %8d %8d %8d  %s / %s   [%s / %s]\n", link, len(tris), len(hull.Triangles()), len(glb), len(ply),
+		fmt.Printf("%-10s %8d %8d %8d %8d  %s / %s   [%s / %s]\n", link, len(tris), len(envelope.Triangles()), len(glb), len(ply),
 			mm(c), mm(hi.Sub(lo)), mm(o.Center), mm(o.Size))
 	}
 
@@ -118,6 +119,10 @@ func existingBoxes(path string) (map[string]linkGeometry, error) {
 	}
 	return geoms, nil
 }
+
+// coverageTolMM is how far a source vertex may poke out of its collision envelope
+// before the generator refuses to ship it (PLY rounding is ~0.001 mm).
+const coverageTolMM = 0.5
 
 func readSTLFile(path string) ([][3]r3.Vector, error) {
 	raw, err := os.ReadFile(path)

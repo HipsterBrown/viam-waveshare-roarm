@@ -20,7 +20,7 @@ var GripperJointLimits = [2]float64{-0.2, 1.9}
 const GripperMountToTCPMM = 63.393
 
 // GripperModel is the gripper's kinematic model: zero DoF, one "body" link
-// carrying the closed jaw as a box or as the hull-decimated jaw mesh, and a
+// carrying the closed jaw as a box or as its slab-box envelope, and a
 // "tcp" leaf. Built as SVA JSON and parsed back so it ships to viam-server
 // with its geometry (a model assembled in memory transmits as UNSPECIFIED).
 func GripperModel(collision, name string) (referenceframe.Model, error) {

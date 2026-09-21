@@ -1,6 +1,7 @@
 package geometry
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"math"
 	"testing"
@@ -294,5 +295,86 @@ func TestChainMatchesURDF(t *testing.T) {
 	want := r3.Vector{X: 45.148, Y: 0, Z: 609.148}
 	if p.Point().Sub(want).Norm() > 0.1 {
 		t.Fatalf("tool at zero pose is %v, want %v", p.Point(), want)
+	}
+}
+
+// glbPositions decodes the POSITION accessor of one of our GLBs (accessor 0,
+// bufferView 0 at byte offset 0 of the single buffer; see cmd/genmeshes/glb.go).
+func glbPositions(t *testing.T, glb []byte) []r3.Vector {
+	t.Helper()
+	jsonLen := int(binary.LittleEndian.Uint32(glb[12:16]))
+	var doc struct {
+		Accessors []struct{ Count int } `json:"accessors"`
+	}
+	if err := json.Unmarshal(glb[20:20+jsonLen], &doc); err != nil {
+		t.Fatal(err)
+	}
+	bin := glb[20+jsonLen+8:]
+	out := make([]r3.Vector, doc.Accessors[0].Count)
+	for i := range out {
+		off := i * 12
+		out[i] = r3.Vector{
+			X: float64(math.Float32frombits(binary.LittleEndian.Uint32(bin[off:]))),
+			Y: float64(math.Float32frombits(binary.LittleEndian.Uint32(bin[off+4:]))),
+			Z: float64(math.Float32frombits(binary.LittleEndian.Uint32(bin[off+8:]))),
+		}
+	}
+	return out
+}
+
+// Every vertex of a link's visual mesh lies inside that link's collision
+// envelope. This is the guard against the hole rdk's hull decimator left in
+// link2 (a shaft with no vertices in its middle): the AABB test above cannot
+// see a missing middle, this can.
+func TestCollisionEnvelopesEncloseTheVisualMeshes(t *testing.T) {
+	var meshCfg referenceframe.ModelConfigJSON
+	if err := json.Unmarshal(meshModelJSON, &meshCfg); err != nil {
+		t.Fatal(err)
+	}
+	glbs := ArmMeshes()
+	for _, l := range meshCfg.Links {
+		if l.Geometry == nil {
+			continue
+		}
+		env, err := spatialmath.NewMeshFromProto(spatialmath.NewZeroPose(),
+			&commonpb.Mesh{ContentType: l.Geometry.MeshContentType, Mesh: l.Geometry.MeshData}, l.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The envelope is a union of axis-aligned boxes, 12 triangles each.
+		tris := env.Triangles()
+		if len(tris)%12 != 0 {
+			t.Fatalf("%s: %d triangles is not a whole number of boxes", l.ID, len(tris))
+		}
+		type box struct{ lo, hi r3.Vector }
+		var boxes []box
+		for i := 0; i < len(tris); i += 12 {
+			b := box{lo: r3.Vector{X: math.Inf(1), Y: math.Inf(1), Z: math.Inf(1)}}
+			b.hi = b.lo.Mul(-1)
+			for _, tr := range tris[i : i+12] {
+				for _, p := range tr.Points() {
+					b.lo = r3.Vector{X: math.Min(b.lo.X, p.X), Y: math.Min(b.lo.Y, p.Y), Z: math.Min(b.lo.Z, p.Z)}
+					b.hi = r3.Vector{X: math.Max(b.hi.X, p.X), Y: math.Max(b.hi.Y, p.Y), Z: math.Max(b.hi.Z, p.Z)}
+				}
+			}
+			boxes = append(boxes, b)
+		}
+		const tol = 0.5 // mm; PLY metres are written with 6 decimals
+		outside := 0
+		for _, p := range glbPositions(t, glbs[l.ID].Mesh) {
+			in := false
+			for _, b := range boxes {
+				if p.X >= b.lo.X-tol && p.X <= b.hi.X+tol && p.Y >= b.lo.Y-tol && p.Y <= b.hi.Y+tol && p.Z >= b.lo.Z-tol && p.Z <= b.hi.Z+tol {
+					in = true
+					break
+				}
+			}
+			if !in {
+				outside++
+			}
+		}
+		if outside > 0 {
+			t.Fatalf("%s: %d visual-mesh vertices lie outside the collision envelope", l.ID, outside)
+		}
 	}
 }

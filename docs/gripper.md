@@ -25,7 +25,7 @@ The gripper does not own its own hardware connection. It holds an arm-component 
 | Name  | Type   | Inclusion | Description                                                                                          |
 |-------|--------|-----------|--------------------------------------------------------------------------------------------------------|
 | `arm` | string | Required  | The name of the arm resource this gripper shares hardware with. Must refer to a `waveshare-roarm:arm`. |
-| `collision_geometry` | string | Optional | `box` (default) or `mesh`. `box` uses one axis-aligned box per link sized from the CAD mesh; `mesh` uses a hull-decimated mesh per link for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
+| `collision_geometry` | string | Optional | `box` (default) or `mesh`. `box` uses one axis-aligned box per link sized from the CAD mesh; `mesh` uses a tighter envelope of 16 axis-aligned slab boxes per link (a stair-stepped hull of the CAD mesh) for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
 
 The gripper's `Geometries` serves the moving jaw's full-resolution mesh posed at its live angle, for the 3D scene and live obstacle checks. The fixed jaw is not modeled separately — it's part of the arm's [`link5`](arm.md) model.
 
