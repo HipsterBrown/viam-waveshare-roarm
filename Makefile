@@ -9,8 +9,12 @@ ifeq ($(VIAM_TARGET_OS), windows)
 	MODULE_BINARY = bin/waveshare-roarm.exe
 endif
 
-$(MODULE_BINARY): Makefile go.mod *.go cmd/module/*.go 
-	$(GO_BUILD_ENV) go build $(GO_BUILD_FLAGS) -o $(MODULE_BINARY) cmd/module/main.go
+GO_SRC := $(shell find cmd internal components -name '*.go' 2>/dev/null)
+EMBEDS := $(shell find internal/geometry -type f ! -name '*.go' 2>/dev/null)
+$(if $(GO_SRC),,$(error GO_SRC is empty: has the source layout moved?))
+
+$(MODULE_BINARY): Makefile go.mod $(GO_SRC) $(EMBEDS)
+	$(GO_BUILD_ENV) go build $(GO_BUILD_FLAGS) -o $(MODULE_BINARY) ./cmd/module
 
 lint:
 	gofmt -s -w .

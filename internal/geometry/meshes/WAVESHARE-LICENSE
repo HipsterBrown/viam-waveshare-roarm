@@ -1,0 +1,15 @@
+The mesh files in this directory (*.glb, *.ply) and the kinematic chain in
+../roarm_m3.json and ../roarm_m3_mesh.json are derived from the RoArm-M3
+description published by Waveshare in the roarm_description ROS 2 package:
+
+  https://github.com/waveshareteam/roarm_ws  (branch ros2-humble, commit 40dbd84)
+  src/roarm_main/roarm_description/urdf/roarm_m3/roarm_m3.xacro
+  src/roarm_main/roarm_description/meshes/roarm_m3/*.stl
+
+That package declares in its package.xml:
+
+  <license>MIT</license>
+
+The original STL files are not redistributed here; these artifacts are
+generated from them by cmd/genmeshes (welded, transformed into this module's
+link frames, and for the collision meshes reduced to per-slab bounding polytopes).

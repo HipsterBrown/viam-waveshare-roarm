@@ -1,0 +1,332 @@
+{
+  "name": "roarm_m3",
+  "kinematic_param_type": "SVA",
+  "links": [
+    {
+      "id": "base_link",
+      "translation": {
+        "X": 0,
+        "Y": 0,
+        "Z": 70.1
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 1,
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        }
+      },
+      "geometry": {
+        "type": "box",
+        "x": 98.5,
+        "y": 81.6,
+        "z": 72.6,
+        "r": 0,
+        "l": 0,
+        "translation": {
+          "X": -6.7,
+          "Y": 0,
+          "Z": 35.3
+        },
+        "orientation": {
+          "type": "quaternion",
+          "value": {
+            "W": 1,
+            "X": 0,
+            "Y": 0,
+            "Z": 0
+          }
+        },
+        "Label": "base_link"
+      },
+      "parent": "world"
+    },
+    {
+      "id": "link1",
+      "translation": {
+        "X": 0,
+        "Y": 0,
+        "Z": 51.959
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 0.49999816339744846,
+          "X": -0.4999999999966269,
+          "Y": -0.4999999999966269,
+          "Z": -0.5000018366025516
+        }
+      },
+      "geometry": {
+        "type": "box",
+        "x": 54.8,
+        "y": 72.4,
+        "z": 60.6,
+        "r": 0,
+        "l": 0,
+        "translation": {
+          "X": 0,
+          "Y": 0,
+          "Z": 31.8
+        },
+        "orientation": {
+          "type": "quaternion",
+          "value": {
+            "W": 1,
+            "X": 0,
+            "Y": 0,
+            "Z": 0
+          }
+        },
+        "Label": "link1"
+      },
+      "parent": "base_link_to_link1"
+    },
+    {
+      "id": "link2",
+      "translation": {
+        "X": 236.815,
+        "Y": 30.002,
+        "Z": 0
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 0.7071054825112364,
+          "X": 0,
+          "Y": 0,
+          "Z": 0.7071080798594735
+        }
+      },
+      "geometry": {
+        "type": "box",
+        "x": 256.8,
+        "y": 55.5,
+        "z": 79,
+        "r": 0,
+        "l": 0,
+        "translation": {
+          "X": 118.4,
+          "Y": 12.2,
+          "Z": -0.1
+        },
+        "orientation": {
+          "type": "quaternion",
+          "value": {
+            "W": 1,
+            "X": 0,
+            "Y": 0,
+            "Z": 0
+          }
+        },
+        "Label": "link2"
+      },
+      "parent": "link1_to_link2"
+    },
+    {
+      "id": "link3",
+      "translation": {
+        "X": 0,
+        "Y": -144.586,
+        "Z": 0
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 1,
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        }
+      },
+      "geometry": {
+        "type": "box",
+        "x": 27.9,
+        "y": 164.8,
+        "z": 35.5,
+        "r": 0,
+        "l": 0,
+        "translation": {
+          "X": -1.6,
+          "Y": -72.3,
+          "Z": 0.2
+        },
+        "orientation": {
+          "type": "quaternion",
+          "value": {
+            "W": 1,
+            "X": 0,
+            "Y": 0,
+            "Z": 0
+          }
+        },
+        "Label": "link3"
+      },
+      "parent": "link2_to_link3"
+    },
+    {
+      "id": "link4",
+      "translation": {
+        "X": 15.147,
+        "Y": -53.653,
+        "Z": -0
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 0.49999816339744846,
+          "X": 0.4999999999966269,
+          "Y": 0.4999999999966269,
+          "Z": -0.5000018366025516
+        }
+      },
+      "geometry": {
+        "type": "box",
+        "x": 53.9,
+        "y": 61.8,
+        "z": 40.4,
+        "r": 0,
+        "l": 0,
+        "translation": {
+          "X": -1.7,
+          "Y": -21.4,
+          "Z": 0
+        },
+        "orientation": {
+          "type": "quaternion",
+          "value": {
+            "W": 1,
+            "X": 0,
+            "Y": 0,
+            "Z": 0
+          }
+        },
+        "Label": "link4"
+      },
+      "parent": "link3_to_link4"
+    },
+    {
+      "id": "link5",
+      "translation": {
+        "X": 0,
+        "Y": 0,
+        "Z": 0
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 1,
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        }
+      },
+      "geometry": {
+        "type": "box",
+        "x": 46.5,
+        "y": 35.5,
+        "z": 120.6,
+        "r": 0,
+        "l": 0,
+        "translation": {
+          "X": -7.8,
+          "Y": 0,
+          "Z": 59.6
+        },
+        "orientation": {
+          "type": "quaternion",
+          "value": {
+            "W": 1,
+            "X": 0,
+            "Y": 0,
+            "Z": 0
+          }
+        },
+        "Label": "link5"
+      },
+      "parent": "link4_to_link5"
+    },
+    {
+      "id": "tool",
+      "translation": {
+        "X": 0,
+        "Y": 0,
+        "Z": 52.035
+      },
+      "orientation": {
+        "type": "quaternion",
+        "value": {
+          "W": 1,
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        }
+      },
+      "parent": "link5"
+    }
+  ],
+  "joints": [
+    {
+      "id": "base_link_to_link1",
+      "type": "revolute",
+      "parent": "base_link",
+      "axis": {
+        "X": 0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 180.0004209182994,
+      "min": -180.0004209182994
+    },
+    {
+      "id": "link1_to_link2",
+      "type": "revolute",
+      "parent": "link1",
+      "axis": {
+        "X": -0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 90.0002104591497,
+      "min": -90.0002104591497
+    },
+    {
+      "id": "link2_to_link3",
+      "type": "revolute",
+      "parent": "link2",
+      "axis": {
+        "X": 0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 169.02254956359286,
+      "min": -57.29577951308232
+    },
+    {
+      "id": "link3_to_link4",
+      "type": "revolute",
+      "parent": "link3",
+      "axis": {
+        "X": 0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 90.0002104591497,
+      "min": -90.0002104591497
+    },
+    {
+      "id": "link4_to_link5",
+      "type": "revolute",
+      "parent": "link4",
+      "axis": {
+        "X": 0,
+        "Y": 0,
+        "Z": 1
+      },
+      "max": 180.0004209182994,
+      "min": -180.0004209182994
+    }
+  ]
+}

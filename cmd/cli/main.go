@@ -15,7 +15,7 @@ import (
 
 	"go.viam.com/rdk/logging"
 
-	waveshareroarm "waveshareroarm"
+	"waveshareroarm/internal/roarm"
 )
 
 func usage() {
@@ -41,7 +41,7 @@ func main() {
 	}
 
 	logger := logging.NewLogger("roarm-cli")
-	ctrl, err := waveshareroarm.NewRoArmController(&waveshareroarm.RoArmConfig{
+	ctrl, err := roarm.NewController(&roarm.Config{
 		Host: *host, Port: *port, Baudrate: *baud, Logger: logger,
 	})
 	if err != nil {
@@ -69,12 +69,12 @@ func main() {
 		}
 		joint := atoi(args[1])
 		rad := atof(args[2])
-		speed, acc := waveshareroarm.SpeedToUnits(waveshareroarm.DefaultSpeedDegsPerSec), waveshareroarm.AccelToUnits(waveshareroarm.DefaultAccelDegsPerSecSq)
+		speed, acc := roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec), roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq)
 		if len(args) > 3 {
-			speed = waveshareroarm.SpeedToUnits(atof(args[3]))
+			speed = roarm.SpeedToUnits(atof(args[3]))
 		}
 		if len(args) > 4 {
-			acc = waveshareroarm.AccelToUnits(atof(args[4]))
+			acc = roarm.AccelToUnits(atof(args[4]))
 		}
 		if err := ctrl.SetJointRadian(ctx, joint, rad, speed, acc); err != nil {
 			log.Fatal(err)
@@ -84,7 +84,7 @@ func main() {
 		if len(args) < 2 {
 			usage()
 		}
-		if err := ctrl.SetJointRadian(ctx, 6, atof(args[1]), waveshareroarm.SpeedToUnits(waveshareroarm.DefaultSpeedDegsPerSec), waveshareroarm.AccelToUnits(waveshareroarm.DefaultAccelDegsPerSecSq)); err != nil {
+		if err := ctrl.SetJointRadian(ctx, 6, atof(args[1]), roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec), roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq)); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println("OK")
@@ -101,9 +101,9 @@ func main() {
 // timeMove is bench task B1/B2: it parks the joint at from, then commands
 // `to` at degPerSec and polls feedback every 50 ms until the joint is within
 // tolerance or stops moving, printing the elapsed time and the implied speed.
-func timeMove(ctx context.Context, ctrl *waveshareroarm.RoArmController, joint int, from, to, degPerSec float64) {
-	speed := waveshareroarm.SpeedToUnits(degPerSec)
-	acc := waveshareroarm.AccelToUnits(waveshareroarm.DefaultAccelDegsPerSecSq)
+func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, degPerSec float64) {
+	speed := roarm.SpeedToUnits(degPerSec)
+	acc := roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq)
 	mask := make([]bool, 6)
 	mask[joint-1] = true
 
