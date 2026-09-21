@@ -44,7 +44,7 @@ func (s *simulatedArm) MoveThroughJointPositionsStreamed(
 				return err
 			}
 			// A re-target must not erase a Stop that landed between points.
-			if err := s.startMove(ctx, p.Positions, idx > 0); err != nil {
+			if err := s.startMove(ctx, p.Positions, idx > 0, 0); err != nil {
 				return err
 			}
 			prev, idx = p.Time, idx+1

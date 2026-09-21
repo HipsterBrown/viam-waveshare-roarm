@@ -13,6 +13,8 @@
 | `simulate_time` | bool | Optional | Whether a background goroutine advances the arm's position in real time. Default is `true`. |
 | `collision_geometry` | string | Optional | `box` (default) or `mesh`. `box` uses one axis-aligned box per link sized from the CAD mesh; `mesh` uses a tighter envelope per link: the CAD mesh cut into 6 slabs along its length, each replaced by a 26-sided bounding polytope that chamfers the corners and edges the mesh does not reach, for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
 
+`MoveThroughJointPositions` honors a requested speed, slowing (or speeding up, within the `[3, 180]` deg/s clamp) the interpolation for that move. It ignores a requested acceleration: the simulator interpolates at constant speed with no ramp.
+
 ### `hipsterbrown:waveshare-roarm:simulated-gripper` attributes
 
 The simulated gripper needs no `arm` attribute: it is fully independent hardware-wise and does not pair with an arm resource.

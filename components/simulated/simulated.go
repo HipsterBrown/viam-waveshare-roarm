@@ -99,8 +99,12 @@ func (cfg *SimulatedArmConfig) motionName() string {
 type simOperation struct {
 	// targetInputs is the goal joint configuration in radians.
 	targetInputs []float64
-	done         bool
-	stopped      bool
+	// speed is this move's joint travel speed in radians per second, resolved by
+	// startMove from the requested MoveOptions (or the arm's configured speed, when
+	// unrequested).
+	speed   float64
+	done    bool
+	stopped bool
 }
 
 func (op simOperation) isMoving() bool {
@@ -245,7 +249,7 @@ func (s *simulatedArm) updateForTime(now time.Time) {
 	modifiedSpeeds := make([]float64, len(s.currInputs))
 	for jointIdx, currJointInp := range s.currInputs {
 		diffRads := math.Abs(s.operation.targetInputs[jointIdx] - currJointInp)
-		modifiedSpeeds[jointIdx] = (diffRads / maxDist) * s.speed
+		modifiedSpeeds[jointIdx] = (diffRads / maxDist) * s.operation.speed
 	}
 
 	// anyJointStillMoving stays false only when every joint has reached its target.
@@ -317,7 +321,7 @@ func (s *simulatedArm) MoveToPosition(ctx context.Context, pose spatialmath.Pose
 func (s *simulatedArm) MoveToJointPositions(
 	ctx context.Context, positions []referenceframe.Input, extra map[string]interface{},
 ) error {
-	if err := s.startMove(ctx, positions, false); err != nil {
+	if err := s.startMove(ctx, positions, false, 0); err != nil {
 		return err
 	}
 	return s.awaitOperation(ctx)
@@ -325,7 +329,11 @@ func (s *simulatedArm) MoveToJointPositions(
 
 // startMove validates positions and replaces the in-flight operation without waiting. With
 // keepStop, an operation already stopped is not replaced: the caller reports the stop.
-func (s *simulatedArm) startMove(ctx context.Context, positions []referenceframe.Input, keepStop bool) error {
+// speedRadPerSec is this move's joint travel speed; 0 resolves to the arm's configured
+// speed, so updateForTime can read the operation's speed unconditionally.
+func (s *simulatedArm) startMove(
+	ctx context.Context, positions []referenceframe.Input, keepStop bool, speedRadPerSec float64,
+) error {
 	if len(positions) != len(s.model.DoF()) {
 		return fmt.Errorf("expected %d joint positions for the RoArm-M3 arm, got %d",
 			len(s.model.DoF()), len(positions))
@@ -342,7 +350,10 @@ func (s *simulatedArm) startMove(ctx context.Context, positions []referenceframe
 	if keepStop && s.operation.stopped {
 		return errors.New("stopped before reaching target")
 	}
-	s.operation = simOperation{targetInputs: target}
+	if speedRadPerSec == 0 {
+		speedRadPerSec = s.speed
+	}
+	s.operation = simOperation{targetInputs: target, speed: speedRadPerSec}
 	return nil
 }
 
@@ -370,12 +381,24 @@ func (s *simulatedArm) awaitOperation(ctx context.Context) error {
 	}
 }
 
-// MoveThroughJointPositions moves the arm through each joint configuration in order.
+// MoveThroughJointPositions moves the arm through each joint configuration in order,
+// honoring a requested speed. Acceleration is resolved (for its per-joint validation) but
+// otherwise ignored: the simulator interpolates at constant speed with no ramp.
 func (s *simulatedArm) MoveThroughJointPositions(
-	ctx context.Context, positions [][]referenceframe.Input, _ *rdkarm.MoveOptions, _ map[string]interface{},
+	ctx context.Context, positions [][]referenceframe.Input, options *rdkarm.MoveOptions, _ map[string]interface{},
 ) error {
+	speedDegs, _, err := roarm.ResolveMoveProfile(options, len(s.model.DoF()),
+		s.speed*180/math.Pi, roarm.DefaultAccelDegsPerSecSq, s.logger)
+	if err != nil {
+		return err
+	}
+	speedRadPerSec := speedDegs * math.Pi / 180
+
 	for _, goal := range positions {
-		if err := s.MoveToJointPositions(ctx, goal, nil); err != nil {
+		if err := s.startMove(ctx, goal, false, speedRadPerSec); err != nil {
+			return err
+		}
+		if err := s.awaitOperation(ctx); err != nil {
 			return err
 		}
 		if ctx.Err() != nil {

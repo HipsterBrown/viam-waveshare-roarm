@@ -189,6 +189,42 @@ func TestSimulatedMoveToJointPositions(t *testing.T) {
 	}
 }
 
+// The simulated arm interpolates at its configured speed; a slower requested
+// profile must make the same move take proportionally longer, or a motion plan
+// validated against the simulator tells you nothing about the real arm.
+func TestSimulatedArmHonorsMoveOptionsSpeed(t *testing.T) {
+	sim := newTestSimArm(t, 1.0) // 1 rad/s configured
+	ctx := context.Background()
+	base := time.Time{}
+
+	// Half the configured speed: after one second the arm is half way to a
+	// 1-radian target instead of at it.
+	moveErr := make(chan error, 1)
+	go func() {
+		moveErr <- sim.MoveThroughJointPositions(ctx,
+			[][]referenceframe.Input{{1.0, 0, 0, 0, 0}},
+			&rdkarm.MoveOptions{MaxVelRads: 0.5}, nil)
+	}()
+	waitForMoving(t, sim)
+
+	sim.updateForTime(base.Add(time.Second))
+	inputs, err := sim.JointPositions(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertInputs(t, inputs, []float64{0.5, 0, 0, 0, 0}, "half way at half the configured speed")
+
+	sim.updateForTime(base.Add(2 * time.Second))
+	if err := <-moveErr; err != nil {
+		t.Fatal(err)
+	}
+	inputs, err = sim.JointPositions(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertInputs(t, inputs, []float64{1.0, 0, 0, 0, 0}, "at the target after two seconds")
+}
+
 func TestSimulatedMoveRejectsWrongJointCount(t *testing.T) {
 	sim := newTestSimArm(t, 1.0)
 	if err := sim.MoveToJointPositions(context.Background(), []referenceframe.Input{0, 0, 0}, nil); err == nil {
