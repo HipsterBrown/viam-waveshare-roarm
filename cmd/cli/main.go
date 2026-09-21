@@ -25,9 +25,11 @@ func usage() {
   move <joint> <rad> [deg_per_sec] [deg_per_sec2]
                                         move one joint (1-6, software frame); no limit checks
   gripper <rad>                         move joint 6 (software frame)
-  time-move <joint> <from_rad> <to_rad> <deg_per_sec>
+  time-move <joint> <from_rad> <to_rad> <deg_per_sec> [deg_per_sec2]
                                         move to from_rad, settle, then move to to_rad while
-                                        polling feedback; print elapsed and implied deg/s`)
+                                        polling feedback; print elapsed, implied deg/s and
+                                        each settle's outcome. Acceleration defaults to the
+                                        module default; pass a low one to exercise the ramp.`)
 	os.Exit(2)
 }
 
@@ -92,7 +94,11 @@ func main() {
 		if len(args) < 5 {
 			usage()
 		}
-		timeMove(ctx, ctrl, atoi(args[1]), atof(args[2]), atof(args[3]), atof(args[4]))
+		accel := 0.0 // 0 means the module default
+		if len(args) > 5 {
+			accel = atof(args[5])
+		}
+		timeMove(ctx, ctrl, atoi(args[1]), atof(args[2]), atof(args[3]), atof(args[4]), accel)
 	default:
 		usage()
 	}
@@ -101,9 +107,17 @@ func main() {
 // timeMove is bench task B1/B2: it parks the joint at from, then commands
 // `to` at degPerSec and polls feedback every 50 ms until the joint is within
 // tolerance or stops moving, printing the elapsed time and the implied speed.
-func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, degPerSec float64) {
+// timeMove parks the joint at from, then commands to at the given profile and
+// reports how long the settle actually took. degPerSecSq is optional: it
+// matters because the settle's window, grace and deadline all derive from the
+// acceleration, and a low one is the case that used to report a move complete
+// the instant it started.
+func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, degPerSec, degPerSecSq float64) {
+	if degPerSecSq <= 0 {
+		degPerSecSq = roarm.DefaultAccelDegsPerSecSq
+	}
 	speed := roarm.SpeedToUnits(degPerSec)
-	acc := roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq)
+	acc := roarm.AccelToUnits(degPerSecSq)
 	mask := make([]bool, 6)
 	mask[joint-1] = true
 
@@ -137,8 +151,9 @@ func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, 
 	pos := park(to)
 	elapsed := time.Since(startedAt)
 	travelDeg := math.Abs(to-from) * 180 / math.Pi
-	fmt.Printf("joint %d: %.1f deg in %v -> %.1f deg/s (commanded %.1f deg/s, %d units); final %.4f rad\n",
-		joint, travelDeg, elapsed.Round(time.Millisecond), travelDeg/elapsed.Seconds(), degPerSec, speed, pos[joint-1])
+	fmt.Printf("joint %d: %.1f deg in %v -> %.1f deg/s (commanded %.1f deg/s at %.0f deg/s^2; %d/%d units); final %.4f rad\n",
+		joint, travelDeg, elapsed.Round(time.Millisecond), travelDeg/elapsed.Seconds(),
+		degPerSec, degPerSecSq, speed, acc, pos[joint-1])
 }
 
 func atoi(s string) int {
