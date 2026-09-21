@@ -28,7 +28,6 @@ type FakeController struct {
 	HoldStill         bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
 	SettleCalls       int
 	LastSettleRequest roarm.SettleRequest  // request passed to the most recent WaitUntilSettled
-	SettleOutcome     roarm.SettleOutcome  // outcome WaitUntilSettled reports; zero value is SettleArrived
 	WriteCount        int                  // SetJointRadian(s) calls
 	Closed            bool                 // set by Close
 	HealthSnap        roarm.HealthSnapshot // what Health reports; ResetHealth zeroes it
@@ -160,7 +159,7 @@ func (f *FakeController) WaitUntilSettled(ctx context.Context, req roarm.SettleR
 	defer f.mu.Unlock()
 	f.SettleCalls++
 	f.LastSettleRequest = req
-	return roarm.SettleResult{Positions: f.currentLocked(), Outcome: f.SettleOutcome}, nil
+	return roarm.SettleResult{Positions: f.currentLocked(), Outcome: roarm.SettleArrived}, nil
 }
 
 func (f *FakeController) Health() roarm.HealthSnapshot {

@@ -48,6 +48,10 @@ const (
 	// re-checks its context and its own deadline about every 20 ms. The frame
 	// timeout is serialTimeout and is owned by serialReadFeedback.
 	serialChunkTimeout = 20 * time.Millisecond
+
+	// maxFrameLength caps the read buffer: older bytes cannot be part of the
+	// frame still being assembled.
+	maxFrameLength = 512
 )
 
 // errCannotFlushInput reports that the serial input buffer can no longer be
@@ -545,7 +549,6 @@ func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, err
 	// Read response with proper frame detection (based on Python ReadLine class)
 	buffer := make([]byte, 256)
 	responseBuffer := bytes.Buffer{}
-	maxFrameLength := 512
 	startTime := time.Now()
 	// totalBudget is this attempt's frame timeout: whatever is left of the
 	// caller's deadline (attemptCtx, set by queryWithRetries), falling back
@@ -559,7 +562,9 @@ func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, err
 		// Honor caller cancellation (e.g. Reconfigure/Close, RPC deadline).
 		select {
 		case <-ctx.Done():
-			c.health.ReadTimeouts++
+			// Not a ReadTimeout: a cancelled caller is not a link fault, and
+			// counting it would inflate the one counter that says whether the
+			// cable is losing frames.
 			return nil, ctx.Err()
 		default:
 		}
@@ -591,15 +596,13 @@ func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, err
 		}
 
 		// Limit buffer size to prevent unbounded growth
+		// Keep only the last maxFrameLength bytes. Writing a sub-slice of the
+		// buffer's own array back into it after Reset is a forward copy, which
+		// bytes.Buffer does with copy, so it needs no intermediate.
 		if responseBuffer.Len() > maxFrameLength {
-			// Keep only the last maxFrameLength bytes
 			data := responseBuffer.Bytes()
 			responseBuffer.Reset()
-			if len(data) > maxFrameLength {
-				responseBuffer.Write(data[len(data)-maxFrameLength:])
-			} else {
-				responseBuffer.Write(data)
-			}
+			responseBuffer.Write(data[len(data)-maxFrameLength:])
 		}
 
 		// Look for the most recent valid JSON frame. When the firmware
