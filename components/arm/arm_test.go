@@ -522,11 +522,21 @@ func TestArmNewClientFromConn(t *testing.T) {
 }
 
 func TestNewRoArmM3_ConstructsHTTP(t *testing.T) {
-	// newRoArmM3 now requires a motion service dependency (builtin by default),
-	// which this test historically passed as nil deps. Skipped pending a
-	// motion-service test double; construction is still exercised indirectly by
-	// the Validate and Reconfigure tests.
-	t.Skip("requires motion.Service dependency injection")
+	conf := resource.Config{
+		Name:                "arm",
+		API:                 resource.APINamespace("rdk").WithType("component").WithSubtype("arm"),
+		ConvertedAttributes: &RoArmM3Config{Host: "127.0.0.1:0"},
+	}
+	deps := resource.Dependencies{motion.Named("builtin"): &fakeMotion{}}
+	// Should construct successfully in HTTP mode (no connection is attempted).
+	armRes, err := newRoArmM3(context.Background(), deps, conf, logging.NewTestLogger(t))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	defer armRes.Close(context.Background())
+	if armRes.Name().Name != "arm" {
+		t.Fatalf("expected name=arm, got %v", armRes.Name())
+	}
 }
 
 func TestArmReconfigure_MotionOnly(t *testing.T) {

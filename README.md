@@ -84,6 +84,8 @@ Two robustness layers are applied to handle occasional wire-level issues:
 
 ## Migrating from 0.x
 
+- `MoveToPosition` now constrains the tool's approach direction instead of ignoring orientation entirely: it sends an approach-axis cone, 30 degrees half-angle by default, so a goal that planned before may now fail to plan. Pass `{"goal_metric_type": "position_only"}` in `extra` to restore the old orientation-free behavior. To widen the cone instead, use the new `orientation_tolerance_deg` and `position_tolerance_mm` attributes on [`arm`](docs/arm.md) and [`simulated`](docs/simulated.md); an explicit `0` for either one means "use the default," not "demand an exact match."
+- A move that fails to reach its target now returns an error instead of succeeding silently. A move that makes genuine progress and then stops short still succeeds, with a warning logged. If your code relied on `MoveToJointPositions` always returning `nil`, it will now see errors it never saw before, and every one of them was already real.
 - Requires viam-server 1.1.0 or newer.
 - Joint limits are read from the kinematic model (±180°, ±90°, -57° to 169°, ±90°, ±180°) and may be narrower than before.
 - The arm's frame is now the gripper mount (`tool`), not the wrist-roll axis. Remove any offset you added to the gripper's `frame`.
