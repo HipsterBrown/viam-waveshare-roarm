@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -25,6 +26,8 @@ func usage() {
   move <joint> <rad> [deg_per_sec] [deg_per_sec2]
                                         move one joint (1-6, software frame); no limit checks
   gripper <rad>                         move joint 6 (software frame)
+  torque <on|off>                       enable or disable servo torque
+  health [reset]                        print the link health counters, optionally zeroing them
   time-move <joint> <from_rad> <to_rad> <deg_per_sec> [deg_per_sec2]
                                         move to from_rad, settle, then move to to_rad while
                                         polling feedback; print elapsed, implied deg/s and
@@ -90,6 +93,29 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Println("OK")
+	case "torque":
+		if len(args) < 2 {
+			usage()
+		}
+		on := args[1] == "on" || args[1] == "true" || args[1] == "1"
+		if err := ctrl.SetTorque(ctx, on); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("torque %v\n", map[bool]string{true: "on", false: "off"}[on])
+	case "health":
+		h := ctrl.Health().Map()
+		keys := make([]string, 0, len(h))
+		for k := range h {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("%-20s %v\n", k, h[k])
+		}
+		if len(args) > 1 && args[1] == "reset" {
+			ctrl.ResetHealth()
+			fmt.Println("(counters reset)")
+		}
 	case "time-move":
 		if len(args) < 5 {
 			usage()
