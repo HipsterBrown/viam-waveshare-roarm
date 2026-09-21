@@ -48,7 +48,7 @@
       "translation": {
         "X": 0,
         "Y": 0,
-        "Z": 52
+        "Z": 51.959
       },
       "orientation": {
         "type": "quaternion",
@@ -87,8 +87,8 @@
     {
       "id": "link2",
       "translation": {
-        "X": 236.8,
-        "Y": 30,
+        "X": 236.815,
+        "Y": 30.002,
         "Z": 0
       },
       "orientation": {
@@ -129,7 +129,7 @@
       "id": "link3",
       "translation": {
         "X": 0,
-        "Y": -144.6,
+        "Y": -144.586,
         "Z": 0
       },
       "orientation": {
@@ -169,8 +169,8 @@
     {
       "id": "link4",
       "translation": {
-        "X": 15.1,
-        "Y": -53.7,
+        "X": 15.147,
+        "Y": -53.653,
         "Z": -0
       },
       "orientation": {

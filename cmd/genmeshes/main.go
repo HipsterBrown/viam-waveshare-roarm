@@ -33,7 +33,7 @@ func main() {
 	}
 	world := zeroPoseWorld(joints)
 	for _, l := range append(armLinks, "gripper_link", "hand_tcp") {
-		fmt.Printf("%-13s world %v\n", l, round1(world[l].Point()))
+		fmt.Printf("%-13s world %s\n", l, mm(world[l].Point()))
 	}
 
 	meshDir := filepath.Join(desc, "meshes", "roarm_m3")
@@ -54,7 +54,7 @@ func main() {
 		// Align into the SVA geometry frame: the link's parent (input) frame,
 		// which at the zero pose is the URDF link frame itself for every arm
 		// link except base_link (whose parent is world, 70.1 mm below).
-		parentWorld := geometryParentWorld(joints, world, link)
+		parentWorld := geometryParentWorld(world, link)
 		aligned := transformTris(tris, spatialmath.Compose(spatialmath.PoseInverse(parentWorld), world[link]))
 		lo, hi := aabb(aligned)
 		c := lo.Add(hi).Mul(0.5)
@@ -74,8 +74,8 @@ func main() {
 		boxes[link] = linkGeometry{Center: c, Size: hi.Sub(lo), Label: link}
 		meshes[link] = linkGeometry{Center: c, PLY: ply, Label: link}
 		o := old[link]
-		fmt.Printf("%-10s %8d %8d %8d %8d  %v / %v   [%v / %v]\n", link, len(tris), len(hull.Triangles()), len(glb), len(ply),
-			round1(c), round1(hi.Sub(lo)), round1(o.Center), round1(o.Size))
+		fmt.Printf("%-10s %8d %8d %8d %8d  %s / %s   [%s / %s]\n", link, len(tris), len(hull.Triangles()), len(glb), len(ply),
+			mm(c), mm(hi.Sub(lo)), mm(o.Center), mm(o.Size))
 	}
 
 	for name, geoms := range map[string]map[string]linkGeometry{"roarm_m3.json": boxes, "roarm_m3_mesh.json": meshes} {
@@ -94,8 +94,8 @@ func main() {
 	}
 }
 
-// existingBoxes reads the current file's box geometries by link id so Task 2
-// can regenerate the kinematics without touching collision geometry yet.
+// existingBoxes reads the committed file's box geometries by link id so the
+// report can show what a regeneration changed.
 func existingBoxes(path string) (map[string]linkGeometry, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -131,7 +131,7 @@ func readSTLFile(path string) ([][3]r3.Vector, error) {
 // is expressed in: the link's parent. For base_link that is world; for every
 // other arm link it is the incoming joint's frame, which at the zero pose
 // coincides with the URDF link frame.
-func geometryParentWorld(joints []urdfJoint, world map[string]spatialmath.Pose, link string) spatialmath.Pose {
+func geometryParentWorld(world map[string]spatialmath.Pose, link string) spatialmath.Pose {
 	if link == "base_link" {
 		return world["world"]
 	}

@@ -25,8 +25,7 @@ var armLinks = []string{"base_link", "link1", "link2", "link3", "link4", "link5"
 const toolOffsetMM = 52.035
 
 // linkGeometry is what the emitter puts on each link: a box (centre c, size)
-// or a mesh (PLY bytes at centre c). Task 3 fills these from the STLs; Task 2
-// keeps the current boxes.
+// or a mesh (PLY bytes at centre c), both derived from the link's STL.
 type linkGeometry struct {
 	Center r3.Vector
 	Size   r3.Vector // box mode
@@ -66,7 +65,7 @@ func emitModel(joints []urdfJoint, geoms map[string]linkGeometry, name string) (
 		if err != nil {
 			return nil, err
 		}
-		lc := referenceframe.LinkConfig{ID: link, Parent: parent, Translation: round1(pose.Point()), Orientation: oc}
+		lc := referenceframe.LinkConfig{ID: link, Parent: parent, Translation: round3(pose.Point()), Orientation: oc}
 		if g, ok := geoms[link]; ok {
 			lc.Geometry = geometryConfig(g)
 		}
@@ -104,11 +103,17 @@ func geometryConfig(g linkGeometry) *spatialmath.GeometryConfig {
 	return gc
 }
 
-// round1 rounds to 0.1 mm so the JSON stays readable and stable across runs.
+// round1 rounds geometry to 0.1 mm so the JSON stays readable and stable
+// across runs; round3 keeps link transforms at the URDF's 0.001 mm.
 func round1(v r3.Vector) r3.Vector {
-	r := func(x float64) float64 { return math.Round(x*10) / 10 }
-	return r3.Vector{X: r(v.X), Y: r(v.Y), Z: r(v.Z)}
+	f := func(x float64) float64 { return math.Round(x*10) / 10 }
+	return r3.Vector{X: f(v.X), Y: f(v.Y), Z: f(v.Z)}
 }
+
+func round3(v r3.Vector) r3.Vector { return r3.Vector{X: r(v.X), Y: r(v.Y), Z: r(v.Z)} }
+
+// mm formats a vector for the report.
+func mm(v r3.Vector) string { return fmt.Sprintf("(%.1f, %.1f, %.1f)", v.X, v.Y, v.Z) }
 
 // Jaw: gripper_link.stl is the moving jaw, hinged on link5_to_gripper_link.
 // It is aligned into the tool frame (link5 frame translated by toolOffsetMM
@@ -167,8 +172,8 @@ const (
 )
 `, r(pivot.X), r(pivot.Y), r(pivot.Z), r(axis.X), r(axis.Y), r(axis.Z),
 		r(c.X), r(c.Y), r(c.Z), size.X, size.Y, size.Z, jaw.Lower, jaw.Upper)
-	fmt.Printf("jaw: %d tris, hull %d, pivot %v axis %v centre %v size %v\n",
-		len(tris), len(hull.Triangles()), round1(pivot), round1(axis), round1(c), size)
+	fmt.Printf("jaw: %d tris, hull %d, pivot %s axis %s centre %s size %s\n",
+		len(tris), len(hull.Triangles()), mm(pivot), mm(axis), mm(c), mm(size))
 	return os.WriteFile(filepath.Join(out, "gripper_jaw.go"), []byte(src), 0o644)
 }
 
