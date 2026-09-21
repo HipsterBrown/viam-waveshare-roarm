@@ -113,11 +113,20 @@ func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, 
 		}
 		t := make([]float64, 6)
 		t[joint-1] = target
-		pos, err := ctrl.WaitUntilSettled(ctx, t, mask, 15*time.Second)
+		req := roarm.SettleRequest{
+			Start:         t,
+			Target:        t,
+			Mask:          mask,
+			SpeedUnits:    speed,
+			AccUnits:      acc,
+			RequireMotion: true,
+			Timeout:       15 * time.Second,
+		}
+		res, err := ctrl.WaitUntilSettled(ctx, req)
 		if err != nil {
 			log.Fatal(err)
 		}
-		return pos
+		return res.Positions
 	}
 	park(from)
 	time.Sleep(300 * time.Millisecond)

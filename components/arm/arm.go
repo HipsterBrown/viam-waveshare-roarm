@@ -322,8 +322,15 @@ func (r *roarmM3) moveAndSettle(ctx context.Context, ctrl roarm.Handle, current,
 	if err := ctrl.SetJointRadians(ctx, target, speed, acc); err != nil {
 		return fmt.Errorf("failed to move arm: %w", err)
 	}
-	timeout := roarm.SettleTimeoutFor(roarm.MaxTravel(current, target, roarm.ArmMask), speed)
-	if _, err := ctrl.WaitUntilSettled(ctx, target, roarm.ArmMask, timeout); err != nil {
+	req := roarm.SettleRequest{
+		Start:         current,
+		Target:        target,
+		Mask:          roarm.ArmMask,
+		SpeedUnits:    speed,
+		AccUnits:      acc,
+		RequireMotion: true,
+	}
+	if _, err := ctrl.WaitUntilSettled(ctx, req); err != nil {
 		return fmt.Errorf("arm did not settle: %w", err)
 	}
 	return nil
@@ -556,8 +563,15 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if wait {
 			target := make([]float64, 6)
 			target[5] = rad
-			fullTravel := geometry.GripperJointLimits[1] - geometry.GripperJointLimits[0]
-			if _, err := ctrl.WaitUntilSettled(ctx, target, roarm.GripperMask, roarm.SettleTimeoutFor(fullTravel, speed)); err != nil {
+			req := roarm.SettleRequest{
+				Start:         target,
+				Target:        target,
+				Mask:          roarm.GripperMask,
+				SpeedUnits:    speed,
+				AccUnits:      acc,
+				RequireMotion: true,
+			}
+			if _, err := ctrl.WaitUntilSettled(ctx, req); err != nil {
 				return nil, fmt.Errorf("%s: gripper did not settle: %w", roarm.CmdSetGripperRad, err)
 			}
 		}

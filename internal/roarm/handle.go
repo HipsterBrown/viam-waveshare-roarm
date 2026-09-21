@@ -2,7 +2,6 @@ package roarm
 
 import (
 	"context"
-	"time"
 )
 
 // Handle is the narrow interface the arm consumes to talk to its
@@ -17,7 +16,8 @@ type Handle interface {
 	SetJointRadians(ctx context.Context, radians []float64, speed, acc int) error
 	GetJointRadians(ctx context.Context) ([]float64, error)
 	GetFeedback(ctx context.Context) (*FeedbackData, error)
-	WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error)
+	WaitUntilSettled(ctx context.Context, req SettleRequest) (SettleResult, error)
+	Health() HealthSnapshot
 	IsMoving(ctx context.Context) (bool, error)
 	Close(ctx context.Context) error
 }

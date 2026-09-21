@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"waveshareroarm/internal/roarm"
 )
@@ -28,9 +27,10 @@ type FakeController struct {
 	Moving            bool   // what IsMoving reports
 	HoldStill         bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
 	SettleCalls       int
-	LastSettleTimeout time.Duration // timeout passed to the most recent WaitUntilSettled
-	WriteCount        int           // SetJointRadian(s) calls
-	Closed            bool          // set by Close
+	LastSettleRequest roarm.SettleRequest // request passed to the most recent WaitUntilSettled
+	SettleOutcome     roarm.SettleOutcome // outcome WaitUntilSettled reports; zero value is SettleArrived
+	WriteCount        int                 // SetJointRadian(s) calls
+	Closed            bool                // set by Close
 }
 
 func (f *FakeController) err(method string) error {
@@ -151,15 +151,19 @@ func (f *FakeController) GetFeedback(ctx context.Context) (*roarm.FeedbackData, 
 	return &fb, nil
 }
 
-func (f *FakeController) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
+func (f *FakeController) WaitUntilSettled(ctx context.Context, req roarm.SettleRequest) (roarm.SettleResult, error) {
 	if err := f.err("WaitUntilSettled"); err != nil {
-		return nil, err
+		return roarm.SettleResult{}, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.SettleCalls++
-	f.LastSettleTimeout = timeout
-	return f.currentLocked(), nil
+	f.LastSettleRequest = req
+	return roarm.SettleResult{Positions: f.currentLocked(), Outcome: f.SettleOutcome}, nil
+}
+
+func (f *FakeController) Health() roarm.HealthSnapshot {
+	return roarm.HealthSnapshot{}
 }
 
 func (f *FakeController) IsMoving(ctx context.Context) (bool, error) {
