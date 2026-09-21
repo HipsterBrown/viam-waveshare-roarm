@@ -53,12 +53,19 @@ type armRPC interface {
 type RoArmGripperConfig struct {
 	// Arm is the name of the arm resource supplying the controller.
 	Arm string `json:"arm"`
+
+	// CollisionGeometry selects the jaw's collision shape: "" or "box" for a
+	// bounding box, "mesh" for the decimated jaw hull.
+	CollisionGeometry string `json:"collision_geometry,omitempty"`
 }
 
 // Validate validates the gripper config and declares the arm dependency.
 func (cfg *RoArmGripperConfig) Validate(path string) ([]string, []string, error) {
 	if cfg.Arm == "" {
 		return nil, nil, fmt.Errorf("%s: must specify arm dependency", path)
+	}
+	if err := geometry.ValidateCollision(cfg.CollisionGeometry); err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return []string{cfg.Arm}, nil, nil
 }
@@ -106,7 +113,7 @@ func newRoArmM3Gripper(ctx context.Context, deps resource.Dependencies, conf res
 		return nil, fmt.Errorf("gripper %s: could not find arm %q in deps: %w", conf.ResourceName(), cfg.Arm, err)
 	}
 
-	model, err := geometry.GripperModel(geometry.CollisionBox, conf.ResourceName().ShortName())
+	model, err := geometry.GripperModel(cfg.CollisionGeometry, conf.ResourceName().ShortName())
 	if err != nil {
 		return nil, fmt.Errorf("failed to build gripper kinematic model: %w", err)
 	}
@@ -374,11 +381,13 @@ func (g *roarmM3Gripper) Geometries(ctx context.Context, _ map[string]interface{
 	if g.closed.Load() {
 		return nil, errGripperClosed
 	}
-	gif, err := g.model.Geometries([]referenceframe.Input{})
+	jaw, err := g.getGripperRad(ctx)
 	if err != nil {
-		return nil, err
+		// The viewer is the only consumer; draw the jaw closed rather than fail.
+		g.logger.Debugf("Geometries: jaw read failed, drawing closed: %v", err)
+		jaw = geometry.GripperJointLimits[0]
 	}
-	return gif.Geometries(), nil
+	return geometry.GripperMeshes(jaw)
 }
 
 func (g *roarmM3Gripper) IsHoldingSomething(ctx context.Context, _ map[string]interface{}) (rdkgripper.HoldingStatus, error) {

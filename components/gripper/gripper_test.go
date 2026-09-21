@@ -2,6 +2,7 @@ package gripper
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -94,12 +95,15 @@ func TestGripperKinematicsIsZeroDoF(t *testing.T) {
 	}
 }
 
-func TestGripperGeometries(t *testing.T) {
+// The collision geometry lives on the model; Geometries serves the visual
+// jaw mesh instead (see TestGripperGeometriesFollowTheJaw).
+func TestGripperModelGeometries(t *testing.T) {
 	g := newTestGripper(t, &testfake.FakeArmRPC{})
-	geos, err := g.Geometries(context.Background(), nil)
+	gif, err := g.model.Geometries([]referenceframe.Input{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	geos := gif.Geometries()
 	if len(geos) != 1 {
 		t.Fatalf("expected 1 geometry, got %d", len(geos))
 	}
@@ -359,5 +363,40 @@ func TestGripperValidateReturnsArmAsDep(t *testing.T) {
 	}
 	if len(deps) != 1 || deps[0] != "my-arm" {
 		t.Fatalf("expected [my-arm], got %v", deps)
+	}
+}
+
+func TestGripperGeometriesFollowTheJaw(t *testing.T) {
+	fa := &testfake.FakeArmRPC{Joint6Rad: geometry.GripperJointLimits[0]}
+	g := newTestGripper(t, fa)
+	closed, err := g.Geometries(context.Background(), nil)
+	if err != nil || len(closed) != 1 {
+		t.Fatalf("%v %d", err, len(closed))
+	}
+	fa.Joint6Rad = geometry.GripperJointLimits[1]
+	open, _ := g.Geometries(context.Background(), nil)
+	if closed[0].Pose().Point().Sub(open[0].Pose().Point()).Norm() < 5 {
+		t.Fatal("Geometries did not follow the jaw angle")
+	}
+}
+
+func TestGripperGeometriesFallBackToClosedOnReadError(t *testing.T) {
+	g := newTestGripper(t, &testfake.FakeArmRPC{DoCommandError: errors.New("boom")})
+	geos, err := g.Geometries(context.Background(), nil)
+	if err != nil || len(geos) != 1 {
+		t.Fatalf("expected the closed jaw, got %v %d", err, len(geos))
+	}
+}
+
+func TestGripperValidateCollisionGeometry(t *testing.T) {
+	if _, _, err := (&RoArmGripperConfig{Arm: "a", CollisionGeometry: "mesh"}).Validate("g"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := (&RoArmGripperConfig{Arm: "a", CollisionGeometry: "cone"}).Validate("g")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "g") {
+		t.Fatalf("expected the config path in the error, got: %v", err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"go.viam.com/rdk/operation"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
+	"go.viam.com/rdk/spatialmath"
 
 	"waveshareroarm/internal/geometry"
 	"waveshareroarm/internal/roarm"
@@ -717,5 +718,36 @@ func TestBridgeGetGripperRad_NoFeedbackCarriesMarker(t *testing.T) {
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": roarm.CmdGetGripperRad})
 	if err == nil || !strings.Contains(err.Error(), roarm.NoFeedbackMarker) {
 		t.Fatalf("expected the no-feedback marker to cross the bridge, got %v", err)
+	}
+}
+
+func TestGet3DModelsServesSixLinks(t *testing.T) {
+	r := newTestArm(t, &testfake.FakeController{})
+	models, err := r.Get3DModels(context.Background(), nil)
+	if err != nil || len(models) != 6 {
+		t.Fatalf("%v, %d models", err, len(models))
+	}
+	if models["link5"].ContentType != "model/gltf-binary" {
+		t.Fatal("wrong content type")
+	}
+}
+
+func TestReconfigureSwitchesCollisionGeometry(t *testing.T) {
+	fc := &testfake.FakeController{}
+	r := newTestArm(t, fc)
+	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
+	conf := resource.Config{Name: "arm", ConvertedAttributes: &RoArmM3Config{Host: "1.2.3.4", CollisionGeometry: "mesh"}}
+	if err := r.Reconfigure(context.Background(), nil, conf); err != nil {
+		t.Fatal(err)
+	}
+	gif, err := r.snapshotModel().Geometries([]referenceframe.Input{0, 0, 0, 0, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gif.Geometries()[0].(*spatialmath.Mesh); !ok {
+		t.Fatalf("model still has %T geometry after switching to mesh", gif.Geometries()[0])
+	}
+	if fc.Closed {
+		t.Fatal("a collision_geometry change must not reopen the connection")
 	}
 }

@@ -103,3 +103,20 @@ func TestArmValidateAcceptsZeroMotionParams(t *testing.T) {
 		t.Fatalf("zero means default: %v", err)
 	}
 }
+
+func TestArmValidateCollisionGeometry(t *testing.T) {
+	for _, ok := range []string{"", "box", "mesh"} {
+		cfg := &RoArmM3Config{Port: "/dev/ttyUSB0", CollisionGeometry: ok}
+		if _, _, err := cfg.Validate("arms.0"); err != nil {
+			t.Fatalf("%q: %v", ok, err)
+		}
+	}
+	cfg := &RoArmM3Config{Port: "/dev/ttyUSB0", CollisionGeometry: "sphere"}
+	_, _, err := cfg.Validate("arms.0")
+	if err == nil {
+		t.Fatal("expected an error for an unknown collision_geometry")
+	}
+	if !strings.Contains(err.Error(), "arms.0") {
+		t.Fatalf("expected the config path in the error, got: %v", err)
+	}
+}

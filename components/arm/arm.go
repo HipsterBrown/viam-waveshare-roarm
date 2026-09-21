@@ -58,6 +58,10 @@ type RoArmM3Config struct {
 	AccelerationDegsPerSec float32 `json:"acceleration_degs_per_sec_per_sec,omitempty"`
 
 	Motion string `json:"motion,omitempty"`
+
+	// CollisionGeometry selects the collision shapes of the kinematic model:
+	// "" or "box" for bounding boxes, "mesh" for the decimated link hulls.
+	CollisionGeometry string `json:"collision_geometry,omitempty"`
 }
 
 var validBaudrates = map[int]bool{
@@ -83,6 +87,10 @@ func (cfg *RoArmM3Config) Validate(path string) ([]string, []string, error) {
 	}
 	if a := cfg.AccelerationDegsPerSec; a != 0 && (a < roarm.MinAccelDegsPerSecSq || a > roarm.MaxAccelDegsPerSecSq) {
 		return nil, nil, fmt.Errorf("%s: acceleration_degs_per_sec_per_sec must be between %.0f and %.0f, got %.1f", path, roarm.MinAccelDegsPerSecSq, roarm.MaxAccelDegsPerSecSq, a)
+	}
+
+	if err := geometry.ValidateCollision(cfg.CollisionGeometry); err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 
 	return []string{motion.Named(cfg.motionName()).String()}, nil, nil
@@ -172,7 +180,7 @@ func newRoArmM3(ctx context.Context, deps resource.Dependencies, rawConf resourc
 		return nil, fmt.Errorf("failed to create RoArm controller: %w", err)
 	}
 
-	model, err := geometry.ArmModel(geometry.CollisionBox, "roarm_m3")
+	model, err := geometry.ArmModel(conf.CollisionGeometry, rawConf.ResourceName().ShortName())
 	if err != nil {
 		_ = controller.Close(ctx) // Clean up on error
 		return nil, fmt.Errorf("failed to create kinematic model: %w", err)
@@ -224,7 +232,7 @@ func (r *roarmM3) EndPosition(ctx context.Context, extra map[string]interface{})
 		return nil, err
 	}
 
-	pose, err := r.model.Transform(inputs)
+	pose, err := r.snapshotModel().Transform(inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute end position: %w", err)
 	}
@@ -369,6 +377,15 @@ func (r *roarmM3) snapshotController() roarm.Handle {
 	return ctrl
 }
 
+// snapshotModel returns r.model under r.mu; Reconfigure swaps it when
+// collision_geometry changes.
+func (r *roarmM3) snapshotModel() referenceframe.Model {
+	r.mu.Lock()
+	m := r.model
+	r.mu.Unlock()
+	return m
+}
+
 // readAllJointRadians reads all 6 joints from ctrl and enforces the
 // 6-element invariant for callers that index into the slice.
 func readAllJointRadians(ctx context.Context, ctrl roarm.Handle) ([]float64, error) {
@@ -404,7 +421,7 @@ func (r *roarmM3) Stop(ctx context.Context, extra map[string]interface{}) error 
 }
 
 func (r *roarmM3) Kinematics(ctx context.Context) (referenceframe.Model, error) {
-	return r.model, nil
+	return r.snapshotModel(), nil
 }
 
 func (r *roarmM3) CurrentInputs(ctx context.Context) ([]referenceframe.Input, error) {
@@ -582,7 +599,7 @@ func (r *roarmM3) Geometries(ctx context.Context, extra map[string]interface{}) 
 	if err != nil {
 		return nil, err
 	}
-	gif, err := r.model.Geometries(inputs)
+	gif, err := r.snapshotModel().Geometries(inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -590,7 +607,7 @@ func (r *roarmM3) Geometries(ctx context.Context, extra map[string]interface{}) 
 }
 
 func (r *roarmM3) Get3DModels(ctx context.Context, extra map[string]interface{}) (map[string]*commonpb.Mesh, error) {
-	return nil, nil
+	return geometry.ArmMeshes(), nil
 }
 
 func (r *roarmM3) Close(ctx context.Context) error {
@@ -643,6 +660,15 @@ func (r *roarmM3) Reconfigure(ctx context.Context, deps resource.Dependencies, c
 			_ = r.controller.Close(ctx)
 		}
 		r.controller = ctrl
+	}
+
+	if r.cfg == nil || r.cfg.CollisionGeometry != newConf.CollisionGeometry {
+		model, err := geometry.ArmModel(newConf.CollisionGeometry, r.name.ShortName())
+		if err != nil {
+			return err
+		}
+		r.model = model
+		r.jointLimits = jointLimitsFromModel(model)
 	}
 
 	// Motion params always update.
