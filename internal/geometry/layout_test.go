@@ -1,7 +1,6 @@
 package geometry
 
 import (
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -23,10 +22,6 @@ func TestImportGraph(t *testing.T) {
 		}
 	}
 	for _, pkg := range []string{"components/gripper", "components/simulated"} {
-		// components/simulated does not exist until Task 6.
-		if _, err := os.Stat("../../" + pkg); err != nil {
-			continue
-		}
 		if strings.Contains(deps(pkg), "waveshareroarm/components/arm") {
 			t.Fatalf("%s imports components/arm", pkg)
 		}

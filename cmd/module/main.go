@@ -8,11 +8,13 @@ import (
 
 	"waveshareroarm/components/arm"
 	"waveshareroarm/components/gripper"
+	"waveshareroarm/components/simulated"
 )
 
 func main() {
 	module.ModularMain(
 		resource.APIModel{API: rdkarm.API, Model: arm.Model},
 		resource.APIModel{API: rdkgripper.API, Model: gripper.Model},
+		resource.APIModel{API: rdkarm.API, Model: simulated.Model},
 	)
 }
