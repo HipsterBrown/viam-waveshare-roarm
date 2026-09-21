@@ -30,7 +30,6 @@ type linkGeometry struct {
 	Center r3.Vector
 	Size   r3.Vector // box mode
 	PLY    []byte    // mesh mode, nil for box mode
-	Label  string
 }
 
 // linkTransform returns the SVA translation and orientation for link L.
@@ -67,7 +66,7 @@ func emitModel(joints []urdfJoint, geoms map[string]linkGeometry, name string) (
 		}
 		lc := referenceframe.LinkConfig{ID: link, Parent: parent, Translation: round3(pose.Point()), Orientation: oc}
 		if g, ok := geoms[link]; ok {
-			lc.Geometry = geometryConfig(g)
+			lc.Geometry = geometryConfig(g, link)
 		}
 		cfg.Links = append(cfg.Links, lc)
 		if i == len(armLinks)-1 {
@@ -88,9 +87,9 @@ func emitModel(joints []urdfJoint, geoms map[string]linkGeometry, name string) (
 	return json.MarshalIndent(cfg, "", "  ")
 }
 
-func geometryConfig(g linkGeometry) *spatialmath.GeometryConfig {
+func geometryConfig(g linkGeometry, label string) *spatialmath.GeometryConfig {
 	zero, _ := spatialmath.NewOrientationConfig(spatialmath.NewZeroOrientation())
-	gc := &spatialmath.GeometryConfig{TranslationOffset: round1(g.Center), OrientationOffset: *zero, Label: g.Label}
+	gc := &spatialmath.GeometryConfig{TranslationOffset: round1(g.Center), OrientationOffset: *zero, Label: label}
 	if g.PLY != nil {
 		gc.Type = spatialmath.MeshType
 		gc.MeshData = g.PLY

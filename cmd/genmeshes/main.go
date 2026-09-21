@@ -5,7 +5,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,7 +12,6 @@ import (
 	"path/filepath"
 
 	"github.com/golang/geo/r3"
-	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/spatialmath"
 )
 
@@ -41,11 +39,9 @@ func main() {
 	if err := os.MkdirAll(outMeshes, 0o755); err != nil {
 		log.Fatal(err)
 	}
-	old, _ := existingBoxes(filepath.Join(*out, "roarm_m3.json"))
-
 	boxes := map[string]linkGeometry{}
 	meshes := map[string]linkGeometry{}
-	fmt.Printf("\n%-10s %8s %8s %8s %8s  %s\n", "link", "tris", "env", "glb", "ply", "box centre / size (mm)   [old]")
+	fmt.Printf("\n%-10s %8s %8s %8s %8s  %s\n", "link", "tris", "env", "glb", "ply", "box centre / size (mm)")
 	for _, link := range armLinks {
 		tris, err := readSTLFile(filepath.Join(meshDir, link+".stl"))
 		if err != nil {
@@ -72,11 +68,10 @@ func main() {
 		envelope := toMesh(boxesTris(boxesForLink), link)
 		// The collision PLY travels inline in roarm_m3_mesh.json; no standalone file.
 		ply := envelope.TrianglesToPLYBytes(false)
-		boxes[link] = linkGeometry{Center: c, Size: hi.Sub(lo), Label: link}
-		meshes[link] = linkGeometry{Center: c, PLY: ply, Label: link}
-		o := old[link]
-		fmt.Printf("%-10s %8d %8d %8d %8d  %s / %s   [%s / %s]\n", link, len(tris), len(envelope.Triangles()), len(glb), len(ply),
-			mm(c), mm(hi.Sub(lo)), mm(o.Center), mm(o.Size))
+		boxes[link] = linkGeometry{Center: c, Size: hi.Sub(lo)}
+		meshes[link] = linkGeometry{Center: c, PLY: ply}
+		fmt.Printf("%-10s %8d %8d %8d %8d  %s / %s\n", link, len(tris), len(envelope.Triangles()), len(glb), len(ply),
+			mm(c), mm(hi.Sub(lo)))
 	}
 
 	for name, geoms := range map[string]map[string]linkGeometry{"roarm_m3.json": boxes, "roarm_m3_mesh.json": meshes} {
@@ -95,33 +90,8 @@ func main() {
 	}
 }
 
-// existingBoxes reads the committed file's box geometries by link id so the
-// report can show what a regeneration changed.
-func existingBoxes(path string) (map[string]linkGeometry, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var cfg referenceframe.ModelConfigJSON
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return nil, err
-	}
-	geoms := map[string]linkGeometry{}
-	for _, l := range cfg.Links {
-		if l.Geometry == nil {
-			continue
-		}
-		geoms[l.ID] = linkGeometry{
-			Center: l.Geometry.TranslationOffset,
-			Size:   r3.Vector{X: l.Geometry.X, Y: l.Geometry.Y, Z: l.Geometry.Z},
-			Label:  l.ID,
-		}
-	}
-	return geoms, nil
-}
-
-// coverageTolMM is how far a source vertex may poke out of its collision envelope
-// before the generator refuses to ship it (PLY rounding is ~0.001 mm).
+// coverageTolMM is how far a source vertex may poke out of its collision
+// envelope before the generator refuses to ship it (PLY rounding is ~0.001 mm).
 const coverageTolMM = 0.5
 
 func readSTLFile(path string) ([][3]r3.Vector, error) {
