@@ -885,9 +885,6 @@ func TestSetGripperRadSettlesAgainstTheMeasuredPose(t *testing.T) {
 	if !req.RequireMotion {
 		t.Fatal("set_gripper_rad must require motion unless require_motion says otherwise")
 	}
-	if req.Timeout != 0 {
-		t.Fatalf("settle Timeout = %v, want the derived deadline", req.Timeout)
-	}
 }
 
 func TestSetGripperRadHonorsRequireMotionFalse(t *testing.T) {

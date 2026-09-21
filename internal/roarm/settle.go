@@ -47,10 +47,10 @@ var (
 	GripperMask = []bool{false, false, false, false, false, true}
 )
 
-// ErrArmDidNotMove is returned when a settle sees no movement at all from the
-// pose measured before the write. Exported so the health counters and a
-// caller wanting to retry can tell it from a plain timeout.
-var ErrArmDidNotMove = errors.New("the arm did not move")
+// errArmDidNotMove is returned when a settle sees no movement at all from the
+// pose measured before the write. A sentinel rather than a bare message so
+// noteSettle can count it apart from a plain timeout without matching text.
+var errArmDidNotMove = errors.New("the arm did not move")
 
 // SettleOutcome is how a settle ended.
 type SettleOutcome int
@@ -87,12 +87,6 @@ type SettleRequest struct {
 	// moves and gripper opens; false for Grab, where closing onto an object
 	// and not moving is the expected outcome.
 	RequireMotion bool
-	// Timeout overrides the derived deadline only; the window and grace still
-	// derive from the profile. Zero derives everything, which is what every
-	// production caller passes. A test forcing a short timeout on a slow
-	// profile hits the deadline before the grace and so never reaches the
-	// stall or never-moved branches.
-	Timeout time.Duration
 }
 
 // SettleResult reports how a settle ended and what it cost, so a caller can
@@ -111,7 +105,6 @@ type SettleResult struct {
 
 // settlePlan is the timing derived for one settle.
 type settlePlan struct {
-	Travel   float64
 	Duration time.Duration
 	Window   time.Duration
 	Grace    time.Duration
@@ -141,16 +134,17 @@ func planSettle(req SettleRequest) (settlePlan, error) {
 	// travel is the worst single masked joint, not a sum: the firmware applies
 	// one speed to every joint in a T:102 command, so the shorter-travel joints
 	// finish early and the longest one sets the duration.
-	p := settlePlan{Travel: MaxTravel(req.Start, req.Target, req.Mask)}
+	travel := MaxTravel(req.Start, req.Target, req.Mask)
+	var p settlePlan
 
 	// The modelled duration of the commanded move: a trapezoid when it reaches
 	// cruise, a triangle when acceleration limits it. A speed-only 2*travel/v
 	// is what used to make a short move at the default profile exceed its own
 	// deadline.
-	if p.Travel >= v*v/a {
-		p.Duration = seconds(p.Travel/v + v/a)
+	if travel >= v*v/a {
+		p.Duration = seconds(travel/v + v/a)
 	} else {
-		p.Duration = seconds(2 * math.Sqrt(p.Travel/a))
+		p.Duration = seconds(2 * math.Sqrt(travel/a))
 	}
 
 	// The window over which a healthy arm must cover more than StallRad.
@@ -159,16 +153,13 @@ func planSettle(req SettleRequest) (settlePlan, error) {
 	// The ramp, then one window. For a move too short to reach cruise the real
 	// ramp is sqrt(travel/a), not v/a; using v/a there put the grace past the
 	// deadline for a third of the validated range.
-	p.Grace = seconds(math.Min(v/a, math.Sqrt(p.Travel/a))) + p.Window
+	p.Grace = seconds(math.Min(v/a, math.Sqrt(travel/a))) + p.Window
 
 	// No upper clamp: a ceiling truncates healthy slow moves (a 360-degree
 	// joint sweep at 3 deg/s genuinely takes 120 s), both inputs are bounded,
 	// and a stopped arm is caught by the grace within 6.8 s anywhere in the
 	// range rather than by this deadline. The caller's context is the backstop.
 	p.Deadline = max(2*p.Duration, p.Grace+p.Window, minSettleTimeout)
-	if req.Timeout > 0 {
-		p.Deadline = req.Timeout
-	}
 	return p, nil
 }
 
@@ -267,7 +258,7 @@ func waitUntilSettled(
 		if req.RequireMotion && moved <= StallRad && remaining > 2*settleTolRad {
 			return res, fmt.Errorf("%w: still %.1f deg from the target after %v; "+
 				"check that torque is enabled, that the workspace is clear, and the link's health via the comms_health command",
-				ErrArmDidNotMove, remaining*180/math.Pi, res.Elapsed.Round(time.Millisecond))
+				errArmDidNotMove, remaining*180/math.Pi, res.Elapsed.Round(time.Millisecond))
 		}
 		res.Outcome = SettleStopped
 		return res, nil

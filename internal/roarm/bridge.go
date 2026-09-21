@@ -1,6 +1,7 @@
 package roarm
 
-// Gripper <-> arm DoCommand bridge.
+// DoCommand vocabulary: the gripper <-> arm bridge, plus the arm's own
+// operator-facing commands.
 //
 // The gripper resolves its arm dependency through the resource framework and
 // receives an arm.Arm gRPC client, not a direct reference to *roarmM3. As a
@@ -8,6 +9,9 @@ package roarm
 // arm's DoCommand. The constants here are the private protocol between the
 // two resources; they must stay in lock-step across components/arm/arm.go (producer),
 // components/gripper/gripper.go (consumer), and internal/testfake (fake).
+//
+// CmdCommsHealth is not part of that bridge: it is an operator command on the
+// arm, kept here so every DoCommand name in the module has one home.
 //
 // Speeds cross the bridge in deg/s and accelerations in deg/s^2; the arm side
 // converts to firmware units. Gripper speed/acc defaults live in
@@ -17,10 +21,8 @@ const (
 	CmdSetGripperRad = "set_gripper_rad"
 	CmdStopGripper   = "stop_gripper"
 
-	// CmdCommsHealth is not part of the gripper bridge; it lives here beside
-	// the other DoCommand names because this is where they're kept. It
-	// reports the link health counters (see health.go) and, with
-	// {"reset": true}, zeroes them for a clean bench measurement.
+	// CmdCommsHealth reports the link health counters (see health.go) and,
+	// with {"reset": true}, zeroes them for a clean bench measurement.
 	CmdCommsHealth = "comms_health"
 
 	KeyRad   = "rad"

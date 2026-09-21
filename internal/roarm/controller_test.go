@@ -932,7 +932,7 @@ func TestResetInputBufferFailureEscalates(t *testing.T) {
 	if got := c.Health().ResetFailures; got != 2 {
 		t.Fatalf("ResetFailures after the escalation = %d, want 2 (one per call, no retries)", got)
 	}
-	if !errors.Is(err, ErrCannotFlushInput) {
+	if !errors.Is(err, errCannotFlushInput) {
 		t.Fatalf("the escalation should be identifiable by sentinel, got %v", err)
 	}
 	if !fatalTransport(err) {

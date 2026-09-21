@@ -50,15 +50,14 @@ const (
 	serialChunkTimeout = 20 * time.Millisecond
 )
 
-// fatalTransport reports whether err is worth no retry: the port is gone, the
-// caller has given up, or the command could not be put on the wire.
-// go.bug.st/serial never returns io.EOF (a read timeout is (0, nil)); an
-// unplug is a PortError whose Code is PortClosed.
-// ErrCannotFlushInput reports that the serial input buffer can no longer be
-// flushed, so a fresh frame cannot be told from a stale one. Exported so a
-// caller can distinguish it from an ordinary read failure.
-var ErrCannotFlushInput = errors.New("cannot flush the serial input buffer")
+// errCannotFlushInput reports that the serial input buffer can no longer be
+// flushed, so a fresh frame cannot be told from a stale one.
+var errCannotFlushInput = errors.New("cannot flush the serial input buffer")
 
+// fatalTransport reports whether err is worth no retry: the port is gone, the
+// input buffer can no longer be flushed, or the command could not be put on
+// the wire. go.bug.st/serial never returns io.EOF (a read timeout is (0, nil));
+// an unplug is a PortError whose Code is PortClosed.
 func fatalTransport(err error) bool {
 	if err == nil {
 		return false
@@ -75,7 +74,7 @@ func fatalTransport(err error) bool {
 	// A flush that has already failed twice in a row will not succeed on a
 	// retry milliseconds later, and each attempt re-flushes, so retrying only
 	// multiplies the failures before reporting the same thing.
-	if errors.Is(err, ErrCannotFlushInput) {
+	if errors.Is(err, errCannotFlushInput) {
 		return true
 	}
 	var pe interface{ Code() serial.PortErrorCode }
@@ -388,10 +387,11 @@ func (c *Controller) query(ctx context.Context) (*FeedbackData, error) {
 // queryWithRetries runs attempt up to queryAttempts times: the same retry
 // shape for both transports, just with each one's own per-attempt timeout
 // and read. A non-fatal error (fatalTransport reports false) is retried
-// after queryRetryDelay; a fatal one (closed port, cancelled context, short
+// after queryRetryDelay; a fatal one (closed port, unflushable port, short
 // write) is returned immediately. mu is held by query for the whole call.
 func (c *Controller) queryWithRetries(ctx context.Context, perAttempt time.Duration, attempt func(context.Context) (*FeedbackData, error)) (*FeedbackData, error) {
 	var lastErr error
+	attempts := 0
 	for i := 0; i < queryAttempts; i++ {
 		// The CALLER's context, never the per-attempt one: this is what
 		// separates "the operation was cancelled" from "this frame timed out".
@@ -409,6 +409,7 @@ func (c *Controller) queryWithRetries(ctx context.Context, perAttempt time.Durat
 		if budget <= 0 {
 			break // not enough of the caller's deadline left to try again
 		}
+		attempts++
 		attemptCtx, cancel := context.WithTimeout(ctx, budget)
 		fb, err := attempt(attemptCtx)
 		cancel()
@@ -428,8 +429,11 @@ func (c *Controller) queryWithRetries(ctx context.Context, perAttempt time.Durat
 	}
 	c.health.RetriesExhausted++
 	c.noteError(lastErr)
-	c.logger.Warnf("the feedback request failed %d times: %v", queryAttempts, lastErr)
-	return nil, fmt.Errorf("feedback request failed after %d attempts: %w", queryAttempts, lastErr)
+	// attempts, not queryAttempts: a caller whose deadline ran out mid-loop
+	// makes fewer, and a log claiming three tries when it made one sends the
+	// next reader looking for a flaky link instead of a tight deadline.
+	c.logger.Warnf("the feedback request failed %d times: %v", attempts, lastErr)
+	return nil, fmt.Errorf("feedback request failed after %d attempts: %w", attempts, lastErr)
 }
 
 // attemptBudget is how long one attempt may take: the frame timeout, or
@@ -511,7 +515,7 @@ func (c *Controller) serialWrite(cmdBytes []byte) error {
 		// whole read path rests on (audit 2.7).
 		if c.resetFailures >= 2 {
 			return fmt.Errorf("%w (%d consecutive failures), so fresh and stale frames are indistinguishable: %w",
-				ErrCannotFlushInput, c.resetFailures, err)
+				errCannotFlushInput, c.resetFailures, err)
 		}
 		c.logger.Warnf("ResetInputBuffer failed, continuing once: %v", err)
 	} else {

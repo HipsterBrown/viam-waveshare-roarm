@@ -31,12 +31,12 @@ func ResolveMoveProfile(o *rdkarm.MoveOptions, joints int, defSpeedDegs, defAcce
 	if v, err := resolveLimit(o.MaxVelRads, o.MaxVelRadsJoints, joints, "max_vel_rads"); err != nil {
 		return 0, 0, err
 	} else if v > 0 {
-		speed = math.Max(MinSpeedDegsPerSec, math.Min(MaxSpeedDegsPerSec, v*180/math.Pi))
+		speed = max(MinSpeedDegsPerSec, min(MaxSpeedDegsPerSec, v*180/math.Pi))
 	}
 	if v, err := resolveLimit(o.MaxAccRads, o.MaxAccRadsJoints, joints, "max_acc_rads"); err != nil {
 		return 0, 0, err
 	} else if v > 0 {
-		acc = math.Max(MinAccelDegsPerSecSq, math.Min(MaxAccelDegsPerSecSq, v*180/math.Pi))
+		acc = max(MinAccelDegsPerSecSq, min(MaxAccelDegsPerSecSq, v*180/math.Pi))
 	}
 
 	if o.MaxTCPSpeedMPerSec != nil && *o.MaxTCPSpeedMPerSec > 0 && logger != nil {

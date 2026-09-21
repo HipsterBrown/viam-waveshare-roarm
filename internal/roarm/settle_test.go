@@ -146,7 +146,7 @@ func TestBlockedArmIsAnError(t *testing.T) {
 				if err == nil {
 					t.Fatalf("%.0f deg at %.0f deg/s, %.0f deg/s^2: blocked arm reported %v", travelDeg, sp, ac, res.Outcome)
 				}
-				if !errors.Is(err, ErrArmDidNotMove) {
+				if !errors.Is(err, errArmDidNotMove) {
 					t.Fatalf("want the never-moved error, got %v", err)
 				}
 				// The window's samples already exist when the grace elapses, so

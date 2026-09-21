@@ -93,7 +93,7 @@ func (c *Controller) noteSettle(res SettleResult, err error) {
 		c.health.SettlesArrived++
 	case err == nil:
 		c.health.SettlesStopped++
-	case errors.Is(err, ErrArmDidNotMove):
+	case errors.Is(err, errArmDidNotMove):
 		c.health.NeverMoved++
 		c.noteError(err)
 	default:
