@@ -1,4 +1,4 @@
-package waveshareroarm
+package geometry
 
 import (
 	"encoding/json"
@@ -12,7 +12,7 @@ import (
 var homePose = []referenceframe.Input{0, 0, math.Pi / 2, 0, 0}
 
 func TestModelLoads(t *testing.T) {
-	model, err := makeRoArmModelFrame()
+	model, err := ArmModel("roarm_m3")
 	if err != nil {
 		t.Fatalf("failed to parse kinematic model: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestModelLoads(t *testing.T) {
 // validates against them too), so they must match the URDF's mechanical
 // limits and nothing else may widen them.
 func TestModelJointLimitsAreTheURDFLimits(t *testing.T) {
-	model, err := makeRoArmModelFrame()
+	model, err := ArmModel("roarm_m3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func modelWithoutTool(t *testing.T) referenceframe.Model {
 // link4). If this fails after a JSON edit, the tool translation has the
 // wrong sign or is on the wrong axis.
 func TestToolFrameIsTheGripperMount(t *testing.T) {
-	withTool, err := makeRoArmModelFrame()
+	withTool, err := ArmModel("roarm_m3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,8 +81,8 @@ func TestToolFrameIsTheGripperMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := pTool.Point().Sub(pJoint.Point()).Norm()
-	if math.Abs(d-toolOffsetMM) > 0.01 {
-		t.Fatalf("tool is %.2f mm from the roll joint, want %.1f", d, toolOffsetMM)
+	if math.Abs(d-ToolOffsetMM) > 0.01 {
+		t.Fatalf("tool is %.2f mm from the roll joint, want %.1f", d, ToolOffsetMM)
 	}
 	if pTool.Point().Norm() <= pJoint.Point().Norm() {
 		t.Fatalf("tool (%v) is not further from the base than the roll joint (%v): translation sign is wrong", pTool.Point(), pJoint.Point())

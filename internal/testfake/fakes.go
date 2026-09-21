@@ -1,17 +1,19 @@
-package waveshareroarm
+package testfake
 
 import (
 	"context"
 	"fmt"
 	"sync"
 	"time"
+
+	"waveshareroarm/internal/roarm"
 )
 
-// Compile-time check that fakeController satisfies RoArmHandle.
-var _ RoArmHandle = (*fakeController)(nil)
+// Compile-time check that FakeController satisfies roarm.Handle.
+var _ roarm.Handle = (*FakeController)(nil)
 
-// fakeController implements RoArmHandle for tests.
-type fakeController struct {
+// FakeController implements roarm.Handle for tests.
+type FakeController struct {
 	mu                sync.Mutex
 	LastSpeed         int
 	LastAcc           int
@@ -20,7 +22,7 @@ type fakeController struct {
 	LastTorque        *bool
 	LastLED           *int
 	FeedbackCalls     int
-	Feedback          FeedbackData
+	Feedback          roarm.FeedbackData
 	FailOn            string // method name to return error from, empty = never
 	FailWith          error  // error FailOn returns; nil means a generic fake error
 	Moving            bool   // what IsMoving reports
@@ -31,23 +33,23 @@ type fakeController struct {
 	Closed            bool          // set by Close
 }
 
-func (f *fakeController) err(method string) error {
+func (f *FakeController) err(method string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.FailOn == method {
 		if f.FailWith != nil {
 			return f.FailWith
 		}
-		return &fakeErr{method}
+		return &FakeErr{method}
 	}
 	return nil
 }
 
-type fakeErr struct{ m string }
+type FakeErr struct{ m string }
 
-func (e *fakeErr) Error() string { return "fake: forced error from " + e.m }
+func (e *FakeErr) Error() string { return "fake: forced error from " + e.m }
 
-func (f *fakeController) SetTorque(ctx context.Context, enable bool) error {
+func (f *FakeController) SetTorque(ctx context.Context, enable bool) error {
 	if err := f.err("SetTorque"); err != nil {
 		return err
 	}
@@ -57,7 +59,7 @@ func (f *fakeController) SetTorque(ctx context.Context, enable bool) error {
 	return nil
 }
 
-func (f *fakeController) SetLED(ctx context.Context, brightness int) error {
+func (f *FakeController) SetLED(ctx context.Context, brightness int) error {
 	if err := f.err("SetLED"); err != nil {
 		return err
 	}
@@ -67,7 +69,7 @@ func (f *fakeController) SetLED(ctx context.Context, brightness int) error {
 	return nil
 }
 
-func (f *fakeController) SetJointRadian(ctx context.Context, joint int, radian float64, speed, acc int) error {
+func (f *FakeController) SetJointRadian(ctx context.Context, joint int, radian float64, speed, acc int) error {
 	if err := f.err("SetJointRadian"); err != nil {
 		return err
 	}
@@ -88,7 +90,7 @@ func (f *fakeController) SetJointRadian(ctx context.Context, joint int, radian f
 	return nil
 }
 
-func (f *fakeController) SetJointRadians(ctx context.Context, radians []float64, speed, acc int) error {
+func (f *FakeController) SetJointRadians(ctx context.Context, radians []float64, speed, acc int) error {
 	if err := f.err("SetJointRadians"); err != nil {
 		return err
 	}
@@ -103,7 +105,7 @@ func (f *fakeController) SetJointRadians(ctx context.Context, radians []float64,
 	return nil
 }
 
-func (f *fakeController) GetJointRadians(ctx context.Context) ([]float64, error) {
+func (f *FakeController) GetJointRadians(ctx context.Context) ([]float64, error) {
 	if err := f.err("GetJointRadians"); err != nil {
 		return nil, err
 	}
@@ -113,12 +115,12 @@ func (f *fakeController) GetJointRadians(ctx context.Context) ([]float64, error)
 }
 
 // currentLocked returns the six Feedback joints; the mutex must be held.
-func (f *fakeController) currentLocked() []float64 {
+func (f *FakeController) currentLocked() []float64 {
 	return []float64{f.Feedback.B, f.Feedback.S, f.Feedback.E, f.Feedback.Wrist, f.Feedback.R, f.Feedback.G}
 }
 
 // setFeedback writes radians into the Feedback frame joints (software frame).
-func (f *fakeController) setFeedback(radians []float64) {
+func (f *FakeController) setFeedback(radians []float64) {
 	fb := &f.Feedback
 	for i, v := range radians {
 		switch i {
@@ -138,7 +140,7 @@ func (f *fakeController) setFeedback(radians []float64) {
 	}
 }
 
-func (f *fakeController) GetFeedback(ctx context.Context) (*FeedbackData, error) {
+func (f *FakeController) GetFeedback(ctx context.Context) (*roarm.FeedbackData, error) {
 	if err := f.err("GetFeedback"); err != nil {
 		return nil, err
 	}
@@ -149,7 +151,7 @@ func (f *fakeController) GetFeedback(ctx context.Context) (*FeedbackData, error)
 	return &fb, nil
 }
 
-func (f *fakeController) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
+func (f *FakeController) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
 	if err := f.err("WaitUntilSettled"); err != nil {
 		return nil, err
 	}
@@ -160,24 +162,24 @@ func (f *fakeController) WaitUntilSettled(ctx context.Context, target []float64,
 	return f.currentLocked(), nil
 }
 
-func (f *fakeController) IsMoving(ctx context.Context) (bool, error) {
+func (f *FakeController) IsMoving(ctx context.Context) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.Moving, nil
 }
 
-func (f *fakeController) Close(ctx context.Context) error {
+func (f *FakeController) Close(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Closed = true
 	return nil
 }
 
-// fakeArmRPC implements the narrow armRPC interface the gripper consumes.
+// FakeArmRPC implements the narrow armRPC interface the gripper consumes.
 // Joint6Rad is the simulated position; a set moves it there unless HoldStill
 // (a blocked jaw). Joint6Series, when non-empty, is returned one value per
 // get before falling back to Joint6Rad, so IsMoving's two reads can differ.
-type fakeArmRPC struct {
+type FakeArmRPC struct {
 	mu             sync.Mutex
 	Joint6Rad      float64
 	Joint6Series   []float64
@@ -192,7 +194,7 @@ type fakeArmRPC struct {
 	DoCommandError error
 }
 
-func (f *fakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+func (f *FakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.DoCommandError != nil {
@@ -201,35 +203,35 @@ func (f *fakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) 
 	name, _ := cmd["command"].(string)
 	f.LastCommand = name
 	switch name {
-	case cmdGetGripperRad:
+	case roarm.CmdGetGripperRad:
 		if len(f.Joint6Series) > 0 {
 			v := f.Joint6Series[0]
 			f.Joint6Series = f.Joint6Series[1:]
-			return map[string]interface{}{keyRad: v}, nil
+			return map[string]interface{}{roarm.KeyRad: v}, nil
 		}
-		return map[string]interface{}{keyRad: f.Joint6Rad}, nil
-	case cmdSetGripperRad:
-		rad, _ := cmd[keyRad].(float64)
+		return map[string]interface{}{roarm.KeyRad: f.Joint6Rad}, nil
+	case roarm.CmdSetGripperRad:
+		rad, _ := cmd[roarm.KeyRad].(float64)
 		f.LastSetRad = rad
-		f.LastSetSpeed, _ = cmd[keySpeed].(float64)
-		f.LastSetAcc, _ = cmd[keyAcc].(float64)
+		f.LastSetSpeed, _ = cmd[roarm.KeySpeed].(float64)
+		f.LastSetAcc, _ = cmd[roarm.KeyAcc].(float64)
 		f.LastWait = true
-		if w, ok := cmd[keyWait].(bool); ok {
+		if w, ok := cmd[roarm.KeyWait].(bool); ok {
 			f.LastWait = w
 		}
 		if !f.HoldStill {
 			f.Joint6Rad = rad
 		}
 		return map[string]interface{}{"success": true}, nil
-	case cmdStopGripper:
+	case roarm.CmdStopGripper:
 		f.StopCalls++
 		f.LastSetRad = f.Joint6Rad
 		return map[string]interface{}{"success": true}, nil
 	}
-	return nil, fmt.Errorf("fakeArmRPC: unknown command %q", name)
+	return nil, fmt.Errorf("FakeArmRPC: unknown command %q", name)
 }
 
-func (f *fakeArmRPC) IsMoving(ctx context.Context) (bool, error) {
+func (f *FakeArmRPC) IsMoving(ctx context.Context) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.ArmMoving, nil

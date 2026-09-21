@@ -1,4 +1,4 @@
-package waveshareroarm
+package roarm
 
 import (
 	"encoding/json"

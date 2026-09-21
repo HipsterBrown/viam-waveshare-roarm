@@ -1,4 +1,4 @@
-package waveshareroarm
+package roarm
 
 import (
 	"context"
@@ -13,24 +13,24 @@ import (
 const (
 	settlePollInterval = 50 * time.Millisecond
 	settleTolRad       = 0.02  // ~1.1 degrees
-	stallRad           = 0.005 // ~0.3 degrees between consecutive polls
+	StallRad           = 0.005 // ~0.3 degrees between consecutive polls
 	minSettleTimeout   = 500 * time.Millisecond
 	maxSettleTimeout   = 15 * time.Second
-	// isMovingProbeGap separates the two position samples IsMoving compares.
-	isMovingProbeGap = 40 * time.Millisecond
+	// IsMovingProbeGap separates the two position samples IsMoving compares.
+	IsMovingProbeGap = 40 * time.Millisecond
 )
 
 // Joint masks for WaitUntilSettled: the arm settles on joints 1-5 while the
 // gripper is commanded to hold, and the gripper settles on joint 6 alone.
 var (
-	armMask     = []bool{true, true, true, true, true, false}
-	gripperMask = []bool{false, false, false, false, false, true}
+	ArmMask     = []bool{true, true, true, true, true, false}
+	GripperMask = []bool{false, false, false, false, false, true}
 )
 
-// settleTimeoutFor is the one place the settle timeout policy lives: twice
+// SettleTimeoutFor is the one place the settle timeout policy lives: twice
 // the time the longest travel takes at speedUnits, floored and capped.
-func settleTimeoutFor(travelRad float64, speedUnits int) time.Duration {
-	radPerSec := speedFromUnits(speedUnits) * math.Pi / 180
+func SettleTimeoutFor(travelRad float64, speedUnits int) time.Duration {
+	radPerSec := SpeedFromUnits(speedUnits) * math.Pi / 180
 	if radPerSec <= 0 {
 		return maxSettleTimeout
 	}
@@ -44,10 +44,10 @@ func settleTimeoutFor(travelRad float64, speedUnits int) time.Duration {
 	return d
 }
 
-// maxTravel returns the largest |a[i]-b[i]| over the masked joints (nil mask
+// MaxTravel returns the largest |a[i]-b[i]| over the masked joints (nil mask
 // means every joint). Slices shorter than the mask are compared as far as
 // they go.
-func maxTravel(a, b []float64, mask []bool) float64 {
+func MaxTravel(a, b []float64, mask []bool) float64 {
 	m := 0.0
 	for i := 0; i < len(a) && i < len(b); i++ {
 		if mask != nil && (i >= len(mask) || !mask[i]) {
@@ -60,10 +60,10 @@ func maxTravel(a, b []float64, mask []bool) float64 {
 	return m
 }
 
-// waitUntilSettled is the transport-free core of RoArmController.WaitUntilSettled.
+// waitUntilSettled is the transport-free core of Controller.WaitUntilSettled.
 // It sleeps one poll interval, reads, and repeats until the masked joints are
 // within settleTolRad of target (settled), or two consecutive reads agree
-// within stallRad (stalled; returned as ok with stalled=true), or the poll
+// within StallRad (stalled; returned as ok with stalled=true), or the poll
 // budget implied by timeout is spent (error). The first read is never
 // considered a stall because it may still show the pre-command position.
 func waitUntilSettled(
@@ -90,10 +90,10 @@ func waitUntilSettled(
 		if len(cur) < len(target) {
 			return nil, false, fmt.Errorf("short feedback (got %d joints, want %d)", len(cur), len(target))
 		}
-		if maxTravel(cur, target, mask) <= settleTolRad {
+		if MaxTravel(cur, target, mask) <= settleTolRad {
 			return cur, false, nil
 		}
-		if prev != nil && maxTravel(cur, prev, mask) <= stallRad {
+		if prev != nil && MaxTravel(cur, prev, mask) <= StallRad {
 			return cur, true, nil
 		}
 		prev = cur
@@ -101,8 +101,8 @@ func waitUntilSettled(
 	return nil, false, fmt.Errorf("timed out after %v waiting for joints to settle", timeout)
 }
 
-// sleepCtx sleeps for d or until ctx ends.
-func sleepCtx(ctx context.Context, d time.Duration) error {
+// SleepCtx sleeps for d or until ctx ends.
+func SleepCtx(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {

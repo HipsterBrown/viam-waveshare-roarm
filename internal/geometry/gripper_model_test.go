@@ -1,4 +1,4 @@
-package waveshareroarm
+package geometry
 
 import (
 	"math"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestGripperModelIsZeroDoFWithTCPLeaf(t *testing.T) {
-	m, err := buildGripperModel("g")
+	m, err := GripperModel("g")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,13 +20,13 @@ func TestGripperModelIsZeroDoFWithTCPLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if math.Abs(pose.Point().Z-gripperMountToTCPMM) > 0.01 || pose.Point().X != 0 || pose.Point().Y != 0 {
-		t.Fatalf("model leaf is at %v, want (0,0,%.1f)", pose.Point(), gripperMountToTCPMM)
+	if math.Abs(pose.Point().Z-GripperMountToTCPMM) > 0.01 || pose.Point().X != 0 || pose.Point().Y != 0 {
+		t.Fatalf("model leaf is at %v, want (0,0,%.1f)", pose.Point(), GripperMountToTCPMM)
 	}
 }
 
 func TestGripperModelCarriesTheJawBox(t *testing.T) {
-	m, err := buildGripperModel("g")
+	m, err := GripperModel("g")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,15 +38,15 @@ func TestGripperModelCarriesTheJawBox(t *testing.T) {
 	if len(geoms) != 1 {
 		t.Fatalf("expected 1 geometry, got %d", len(geoms))
 	}
-	if math.Abs(geoms[0].Pose().Point().Z-gripperBoxZ/2) > 0.01 {
-		t.Fatalf("box centre at %v, want z=%.1f", geoms[0].Pose().Point(), gripperBoxZ/2)
+	if math.Abs(geoms[0].Pose().Point().Z-GripperBoxZ/2) > 0.01 {
+		t.Fatalf("box centre at %v, want z=%.1f", geoms[0].Pose().Point(), GripperBoxZ/2)
 	}
 }
 
 // A model without OriginalFile bytes transmits as UNSPECIFIED and viam-server
 // drops its geometry. This is the whole reason the model is JSON-built.
 func TestGripperModelSurvivesTheModuleBoundary(t *testing.T) {
-	m, err := buildGripperModel("g")
+	m, err := GripperModel("g")
 	if err != nil {
 		t.Fatal(err)
 	}

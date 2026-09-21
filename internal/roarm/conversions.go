@@ -1,4 +1,4 @@
-package waveshareroarm
+package roarm
 
 import "math"
 
@@ -10,10 +10,10 @@ const (
 	stepsPerDegree      = 4096.0 / 360.0
 	accUnitDegsPerSecSq = 100.0 / stepsPerDegree
 
-	minSpeedDegsPerSec   = 3.0
-	maxSpeedDegsPerSec   = 180.0
-	minAccelDegsPerSecSq = 10.0
-	maxAccelDegsPerSecSq = 500.0
+	MinSpeedDegsPerSec   = 3.0
+	MaxSpeedDegsPerSec   = 180.0
+	MinAccelDegsPerSecSq = 10.0
+	MaxAccelDegsPerSecSq = 500.0
 
 	maxSpeedUnits                = 4096
 	minAccelUnits, maxAccelUnits = 1, 254
@@ -21,15 +21,15 @@ const (
 	// Motion defaults, in physical units; converted where they are sent.
 	DefaultSpeedDegsPerSec        = 50.0
 	DefaultAccelDegsPerSecSq      = 100.0
-	defaultGripperSpeedDegsPerSec = 50.0
-	defaultGripperAccDegsPerSecSq = 100.0
-	// stopSpeedDegsPerSec is the gentle speed Stop re-sends the current
+	DefaultGripperSpeedDegsPerSec = 50.0
+	DefaultGripperAccDegsPerSecSq = 100.0
+	// StopSpeedDegsPerSec is the gentle speed Stop re-sends the current
 	// position at, for both the arm and the gripper.
-	stopSpeedDegsPerSec = 10.0
+	StopSpeedDegsPerSec = 10.0
 )
 
-// minSpeedUnits is the firmware value of minSpeedDegsPerSec (34).
-var minSpeedUnits = int(math.Round(minSpeedDegsPerSec * stepsPerDegree))
+// minSpeedUnits is the firmware value of MinSpeedDegsPerSec (34).
+var minSpeedUnits = int(math.Round(MinSpeedDegsPerSec * stepsPerDegree))
 
 func clamp(v, lo, hi int) int {
 	if v < lo {
@@ -41,18 +41,14 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
-func speedToUnits(degPerSec float64) int {
+func SpeedToUnits(degPerSec float64) int {
 	return clamp(int(math.Round(degPerSec*stepsPerDegree)), minSpeedUnits, maxSpeedUnits)
 }
 
-func speedFromUnits(units int) float64 { return float64(units) / stepsPerDegree }
+func SpeedFromUnits(units int) float64 { return float64(units) / stepsPerDegree }
 
-func accelToUnits(degPerSec2 float64) int {
+func AccelToUnits(degPerSec2 float64) int {
 	return clamp(int(math.Round(degPerSec2/accUnitDegsPerSecSq)), minAccelUnits, maxAccelUnits)
 }
 
-func accelFromUnits(units int) float64 { return float64(units) * accUnitDegsPerSecSq }
-
-// Exported for cmd/cli. Everything inside the package uses the lowercase forms.
-func SpeedToUnits(degPerSec float64) int  { return speedToUnits(degPerSec) }
-func AccelToUnits(degPerSec2 float64) int { return accelToUnits(degPerSec2) }
+func AccelFromUnits(units int) float64 { return float64(units) * accUnitDegsPerSecSq }

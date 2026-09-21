@@ -1,4 +1,4 @@
-package waveshareroarm
+package roarm
 
 import (
 	"bytes"
@@ -18,8 +18,8 @@ import (
 )
 
 // newHTTPTestController spins up an httptest server that responds to /js with
-// a static FeedbackData payload and wires an RoArmController to it.
-func newHTTPTestController(t *testing.T, respT int, body FeedbackData) (*RoArmController, *httptest.Server) {
+// a static FeedbackData payload and wires an Controller to it.
+func newHTTPTestController(t *testing.T, respT int, body FeedbackData) (*Controller, *httptest.Server) {
 	t.Helper()
 	body.T = respT
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +30,7 @@ func newHTTPTestController(t *testing.T, respT int, body FeedbackData) (*RoArmCo
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewRoArmController(&RoArmConfig{Host: u.Host, HTTPTimeout: Duration(2 * time.Second)})
+	c, err := NewController(&Config{Host: u.Host, HTTPTimeout: Duration(2 * time.Second)})
 	if err != nil {
 		srv.Close()
 		t.Fatal(err)
@@ -160,14 +160,14 @@ func TestValidateLEDBrightness_Range(t *testing.T) {
 }
 
 func TestNewRoArmController_RejectsEmptyConfig(t *testing.T) {
-	_, err := NewRoArmController(&RoArmConfig{})
+	_, err := NewController(&Config{})
 	if err == nil {
 		t.Fatal("expected error for empty config (no host, no port)")
 	}
 }
 
 func TestNewRoArmController_HTTPMode(t *testing.T) {
-	c, err := NewRoArmController(&RoArmConfig{Host: "1.2.3.4"})
+	c, err := NewController(&Config{Host: "1.2.3.4"})
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestNewRoArmController_HTTPMode(t *testing.T) {
 }
 
 func TestNewRoArmController_UsesCustomTimeouts(t *testing.T) {
-	c, err := NewRoArmController(&RoArmConfig{
+	c, err := NewController(&Config{
 		Host:          "1.2.3.4",
 		HTTPTimeout:   Duration(2 * time.Second),
 		SerialTimeout: Duration(3 * time.Second),
@@ -273,7 +273,7 @@ func TestJoint6FirmwareFrameTransform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewRoArmController(&RoArmConfig{Host: u.Host, HTTPTimeout: Duration(2 * time.Second)})
+	c, err := NewController(&Config{Host: u.Host, HTTPTimeout: Duration(2 * time.Second)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestHTTPCommand_BadServer_ReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
-	c, err := NewRoArmController(&RoArmConfig{Host: u.Host, HTTPTimeout: Duration(time.Second)})
+	c, err := NewController(&Config{Host: u.Host, HTTPTimeout: Duration(time.Second)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestHTTPCommand_BadServer_ReturnsError(t *testing.T) {
 }
 
 func TestNewRoArmController_SerialFailsOnBadPort(t *testing.T) {
-	_, err := NewRoArmController(&RoArmConfig{Port: "/definitely/not/a/real/device/12345"})
+	_, err := NewController(&Config{Port: "/definitely/not/a/real/device/12345"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent serial port")
 	}
@@ -395,7 +395,7 @@ func TestNewRoArmController_SerialFailsOnBadPort(t *testing.T) {
 func TestNewRoArmController_DefaultBaudrate(t *testing.T) {
 	// This will fail to open the device, but we'll get the "failed to open" error
 	// rather than a baudrate error — confirming the default-baudrate branch ran.
-	_, err := NewRoArmController(&RoArmConfig{Port: "/bogus", Baudrate: 0})
+	_, err := NewController(&Config{Port: "/bogus", Baudrate: 0})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -411,7 +411,7 @@ func TestHTTPCommand_BadJSON_ReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
-	c, err := NewRoArmController(&RoArmConfig{Host: u.Host, HTTPTimeout: Duration(time.Second)})
+	c, err := NewController(&Config{Host: u.Host, HTTPTimeout: Duration(time.Second)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,9 +469,9 @@ func (p *fakeSerialPort) SetReadTimeout(t time.Duration) error { return nil }
 func (p *fakeSerialPort) Close() error                         { p.closed = true; return nil }
 func (p *fakeSerialPort) Break(d time.Duration) error          { return nil }
 
-func newSerialTestController(t *testing.T, port *fakeSerialPort) *RoArmController {
+func newSerialTestController(t *testing.T, port *fakeSerialPort) *Controller {
 	t.Helper()
-	return &RoArmController{
+	return &Controller{
 		serialPort:      port,
 		isHTTP:          false,
 		serialTimeout:   500 * time.Millisecond,
@@ -561,7 +561,7 @@ func TestSendSerialCommand_BadJSONInFrame(t *testing.T) {
 }
 
 func TestRoArmControllerClose_HTTPMode(t *testing.T) {
-	c, err := NewRoArmController(&RoArmConfig{Host: "1.2.3.4"})
+	c, err := NewController(&Config{Host: "1.2.3.4"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +625,7 @@ func TestHTTPWrite_IgnoresBody(t *testing.T) {
 	}))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
-	c, err := NewRoArmController(&RoArmConfig{Host: u.Host})
+	c, err := NewController(&Config{Host: u.Host})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,15 +668,15 @@ func TestControllerIsMoving_ComparesTwoFeedbackFrames(t *testing.T) {
 func TestControllerNoFeedback_Fallbacks(t *testing.T) {
 	c := newSerialTestController(t, &fakeSerialPort{})
 	c.canReadFeedback = false
-	if _, err := c.GetJointRadians(context.Background()); !errors.Is(err, errNoFeedback) {
-		t.Fatalf("expected errNoFeedback, got %v", err)
+	if _, err := c.GetJointRadians(context.Background()); !errors.Is(err, ErrNoFeedback) {
+		t.Fatalf("expected ErrNoFeedback, got %v", err)
 	}
 	moving, err := c.IsMoving(context.Background())
 	if err != nil || moving {
 		t.Fatalf("expected false, nil; got %v %v", moving, err)
 	}
 	start := time.Now()
-	pos, err := c.WaitUntilSettled(context.Background(), []float64{0, 0, 0, 0, 0, 0}, armMask, 200*time.Millisecond)
+	pos, err := c.WaitUntilSettled(context.Background(), []float64{0, 0, 0, 0, 0, 0}, ArmMask, 200*time.Millisecond)
 	if err != nil || pos != nil {
 		t.Fatalf("expected nil, nil; got %v %v", pos, err)
 	}

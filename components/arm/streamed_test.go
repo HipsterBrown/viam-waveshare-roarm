@@ -1,4 +1,4 @@
-package waveshareroarm
+package arm
 
 import (
 	"context"
@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"go.viam.com/rdk/components/arm"
+	rdkarm "go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/referenceframe"
+
+	"waveshareroarm/internal/roarm"
+	"waveshareroarm/internal/testfake"
 )
 
 var streamEpoch = time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
@@ -17,14 +20,14 @@ var streamEpoch = time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 // streamTestArm pins the clock to streamEpoch and makes every sleep return
 // at once while recording its deadline. fc.Feedback is the arm's position
 // for the start gate.
-func streamTestArm(t *testing.T, fc *fakeController) (*roarmM3, func() []time.Time) {
+func streamTestArm(t *testing.T, fc *testfake.FakeController) (*roarmM3, func() []time.Time) {
 	t.Helper()
 	r := newTestArm(t, fc)
 	var mu sync.Mutex
 	var deadlines []time.Time
-	r.clock = clock{
-		now: func() time.Time { return streamEpoch },
-		sleepUntil: func(ctx context.Context, d time.Time) error {
+	r.clock = roarm.Clock{
+		Now: func() time.Time { return streamEpoch },
+		SleepUntil: func(ctx context.Context, d time.Time) error {
 			mu.Lock()
 			deadlines = append(deadlines, d)
 			mu.Unlock()
@@ -38,15 +41,15 @@ func streamTestArm(t *testing.T, fc *fakeController) (*roarmM3, func() []time.Ti
 	}
 }
 
-func pt(at time.Duration, q float64) arm.TrajectoryPoint {
-	return arm.TrajectoryPoint{Time: at, Positions: []referenceframe.Input{q, 0, 0, 0, 0}}
+func pt(at time.Duration, q float64) rdkarm.TrajectoryPoint {
+	return rdkarm.TrajectoryPoint{Time: at, Positions: []referenceframe.Input{q, 0, 0, 0, 0}}
 }
 
 // runStream owns both channels the way the rdk server does: feeds batches in
 // order, closes the input, drains acks.
-func runStream(ctx context.Context, r *roarmM3, batches ...[]arm.TrajectoryPoint) (int, error) {
-	in := make(chan []arm.TrajectoryPoint)
-	out := make(chan arm.Response)
+func runStream(ctx context.Context, r *roarmM3, batches ...[]rdkarm.TrajectoryPoint) (int, error) {
+	in := make(chan []rdkarm.TrajectoryPoint)
+	out := make(chan rdkarm.Response)
 	go func() {
 		defer close(in)
 		for _, b := range batches {
@@ -72,10 +75,10 @@ func runStream(ctx context.Context, r *roarmM3, batches ...[]arm.TrajectoryPoint
 }
 
 func TestStreamed_OneWritePerPointAtScheduledTimes(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{G: 0.4}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{G: 0.4}}
 	r, deadlines := streamTestArm(t, fc)
 	acks, err := runStream(context.Background(), r,
-		[]arm.TrajectoryPoint{pt(0, 0.01), pt(100*time.Millisecond, 0.02), pt(200*time.Millisecond, 0.03)})
+		[]rdkarm.TrajectoryPoint{pt(0, 0.01), pt(100*time.Millisecond, 0.02), pt(200*time.Millisecond, 0.03)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,23 +108,23 @@ func TestStreamed_OneWritePerPointAtScheduledTimes(t *testing.T) {
 }
 
 func TestStreamed_SegmentSpeedMatchesTravelOverTime(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r, _ := streamTestArm(t, fc)
 	// 0.1 rad in 100 ms is 1 rad/s = 57.3 deg/s.
 	_, err := runStream(context.Background(), r,
-		[]arm.TrajectoryPoint{pt(0, 0), pt(100*time.Millisecond, 0.1)})
+		[]rdkarm.TrajectoryPoint{pt(0, 0), pt(100*time.Millisecond, 0.1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := speedToUnits(0.1 * 180 / math.Pi / 0.1); fc.LastSpeed != want {
+	if want := roarm.SpeedToUnits(0.1 * 180 / math.Pi / 0.1); fc.LastSpeed != want {
 		t.Fatalf("segment speed %d units, want %d", fc.LastSpeed, want)
 	}
 }
 
 func TestStreamed_GatesAFarFirstPoint(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{B: 1.0}} // 57 degrees from the first point
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{B: 1.0}} // 57 degrees from the first point
 	r, _ := streamTestArm(t, fc)
-	_, err := runStream(context.Background(), r, []arm.TrajectoryPoint{pt(0, 0), pt(50*time.Millisecond, 0.01)})
+	_, err := runStream(context.Background(), r, []rdkarm.TrajectoryPoint{pt(0, 0), pt(50*time.Millisecond, 0.01)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,18 +139,18 @@ func TestStreamed_GatesAFarFirstPoint(t *testing.T) {
 }
 
 func TestStreamed_RejectsBadTimes(t *testing.T) {
-	r, _ := streamTestArm(t, &fakeController{})
-	if _, err := runStream(context.Background(), r, []arm.TrajectoryPoint{pt(10*time.Millisecond, 0)}); err == nil {
+	r, _ := streamTestArm(t, &testfake.FakeController{})
+	if _, err := runStream(context.Background(), r, []rdkarm.TrajectoryPoint{pt(10*time.Millisecond, 0)}); err == nil {
 		t.Fatal("first point must be at time 0")
 	}
-	r, _ = streamTestArm(t, &fakeController{})
-	if _, err := runStream(context.Background(), r, []arm.TrajectoryPoint{pt(0, 0), pt(0, 0.01)}); err == nil {
+	r, _ = streamTestArm(t, &testfake.FakeController{})
+	if _, err := runStream(context.Background(), r, []rdkarm.TrajectoryPoint{pt(0, 0), pt(0, 0.01)}); err == nil {
 		t.Fatal("times must strictly increase")
 	}
 }
 
 func TestStreamed_EmptyStreamIsANoOp(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r, _ := streamTestArm(t, fc)
 	acks, err := runStream(context.Background(), r)
 	if err != nil || acks != 0 || fc.WriteCount != 0 || fc.SettleCalls != 0 {
@@ -156,22 +159,22 @@ func TestStreamed_EmptyStreamIsANoOp(t *testing.T) {
 }
 
 func TestStreamed_EmptyBatchIsNotAcked(t *testing.T) {
-	r, _ := streamTestArm(t, &fakeController{})
-	acks, err := runStream(context.Background(), r, []arm.TrajectoryPoint{}, []arm.TrajectoryPoint{pt(0, 0)})
+	r, _ := streamTestArm(t, &testfake.FakeController{})
+	acks, err := runStream(context.Background(), r, []rdkarm.TrajectoryPoint{}, []rdkarm.TrajectoryPoint{pt(0, 0)})
 	if err != nil || acks != 1 {
 		t.Fatalf("err=%v acks=%d, want 1", err, acks)
 	}
 }
 
 func TestStreamed_StopCancelsAndStopsWriting(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r, _ := streamTestArm(t, fc)
 	ctx, cancel := context.WithCancel(context.Background())
-	in := make(chan []arm.TrajectoryPoint)
-	out := make(chan arm.Response, 10)
+	in := make(chan []rdkarm.TrajectoryPoint)
+	out := make(chan rdkarm.Response, 10)
 	errCh := make(chan error, 1)
 	go func() { errCh <- r.MoveThroughJointPositionsStreamed(ctx, in, out, nil) }()
-	in <- []arm.TrajectoryPoint{pt(0, 0.01)}
+	in <- []rdkarm.TrajectoryPoint{pt(0, 0.01)}
 	<-out
 	cancel() // what Stop's opMgr.CancelRunning does to the op context
 	select {
@@ -188,9 +191,9 @@ func TestStreamed_StopCancelsAndStopsWriting(t *testing.T) {
 }
 
 func TestStreamed_ClampsToModelLimits(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r, _ := streamTestArm(t, fc)
-	_, err := runStream(context.Background(), r, []arm.TrajectoryPoint{
+	_, err := runStream(context.Background(), r, []rdkarm.TrajectoryPoint{
 		{Time: 0, Positions: []referenceframe.Input{0, 0, 0, 0, 0}},
 		{Time: 50 * time.Millisecond, Positions: []referenceframe.Input{10, 0, 0, 0, 0}},
 	})
@@ -207,11 +210,11 @@ func TestStreamed_ClampsToModelLimits(t *testing.T) {
 // A sparse trajectory's last segment can be long; the final settle must wait
 // for it rather than the 500 ms floor.
 func TestStreamed_FinalSettleWaitsForTheLastSegment(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r, _ := streamTestArm(t, fc)
 	// 1 rad in 2 s: the write goes out at t=0 and the arm needs ~2 s.
 	_, err := runStream(context.Background(), r,
-		[]arm.TrajectoryPoint{pt(0, 0), pt(2*time.Second, 1.0)})
+		[]rdkarm.TrajectoryPoint{pt(0, 0), pt(2*time.Second, 1.0)})
 	if err != nil {
 		t.Fatal(err)
 	}

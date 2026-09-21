@@ -1,4 +1,4 @@
-package waveshareroarm
+package arm
 
 import (
 	"context"
@@ -12,11 +12,15 @@ import (
 	"go.viam.com/rdk/operation"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
+
+	"waveshareroarm/internal/geometry"
+	"waveshareroarm/internal/roarm"
+	"waveshareroarm/internal/testfake"
 )
 
 func mustLoadModel(t *testing.T) referenceframe.Model {
 	t.Helper()
-	m, err := makeRoArmModelFrame()
+	m, err := geometry.ArmModel("roarm_m3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,13 +28,13 @@ func mustLoadModel(t *testing.T) referenceframe.Model {
 }
 
 func TestMoveClampsToJointLimits(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	// Pre-populate GetJointRadians response so MoveToJointPositions can read current.
-	fc.Feedback = FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}
+	fc.Feedback = roarm.FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
+		defaultSpeed: roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec),
+		defaultAcc:   roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -48,12 +52,12 @@ func TestMoveClampsToJointLimits(t *testing.T) {
 }
 
 func TestMoveClampsBelowMinimum(t *testing.T) {
-	fc := &fakeController{}
-	fc.Feedback = FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}
+	fc := &testfake.FakeController{}
+	fc.Feedback = roarm.FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
+		defaultSpeed: roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec),
+		defaultAcc:   roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -70,11 +74,11 @@ func TestMoveClampsBelowMinimum(t *testing.T) {
 }
 
 func TestMoveRejectsWrongLengthInput(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
+		defaultSpeed: roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec),
+		defaultAcc:   roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -90,11 +94,11 @@ func TestMoveRejectsWrongLengthInput(t *testing.T) {
 // JointPositions, which previously re-entered r.mu and deadlocked under
 // sync.Mutex. A timeout ctx bounds any regression.
 func TestEndPositionDoesNotDeadlock(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
+		defaultSpeed: roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec),
+		defaultAcc:   roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -107,12 +111,12 @@ func TestEndPositionDoesNotDeadlock(t *testing.T) {
 	}
 }
 
-func newTestArm(t *testing.T, fc *fakeController) *roarmM3 {
+func newTestArm(t *testing.T, fc *testfake.FakeController) *roarmM3 {
 	t.Helper()
 	return &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
+		defaultSpeed: roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec),
+		defaultAcc:   roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -121,7 +125,7 @@ func newTestArm(t *testing.T, fc *fakeController) *roarmM3 {
 }
 
 func TestDoCommand_SetTorque(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	out, err := r.DoCommand(context.Background(), map[string]interface{}{
 		"command": "set_torque",
@@ -139,7 +143,7 @@ func TestDoCommand_SetTorque(t *testing.T) {
 }
 
 func TestDoCommand_SetTorqueMissingParam(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "set_torque"})
 	if err == nil {
@@ -148,7 +152,7 @@ func TestDoCommand_SetTorqueMissingParam(t *testing.T) {
 }
 
 func TestDoCommand_SetLED(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{
 		"command":    "set_led",
@@ -163,7 +167,7 @@ func TestDoCommand_SetLED(t *testing.T) {
 }
 
 func TestDoCommand_SetLEDMissingParam(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "set_led"})
 	if err == nil {
@@ -173,7 +177,7 @@ func TestDoCommand_SetLEDMissingParam(t *testing.T) {
 
 func TestDoCommand_MoveToHome(t *testing.T) {
 	const startGripper = 0.42
-	fc := &fakeController{Feedback: FeedbackData{G: startGripper}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{G: startGripper}}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "move_to_home"})
 	if err != nil {
@@ -188,8 +192,8 @@ func TestDoCommand_MoveToHome(t *testing.T) {
 }
 
 func TestDoCommand_GetFeedback(t *testing.T) {
-	fc := &fakeController{
-		Feedback: FeedbackData{X: 1, Y: 2, Z: 3, B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5, G: 0.6},
+	fc := &testfake.FakeController{
+		Feedback: roarm.FeedbackData{X: 1, Y: 2, Z: 3, B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5, G: 0.6},
 	}
 	r := newTestArm(t, fc)
 	out, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "get_feedback"})
@@ -213,7 +217,7 @@ func TestDoCommand_GetFeedback(t *testing.T) {
 }
 
 func TestDoCommand_SetSpeed(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	out, err := r.DoCommand(context.Background(), map[string]interface{}{
 		"command": "set_speed",
@@ -225,13 +229,13 @@ func TestDoCommand_SetSpeed(t *testing.T) {
 	if out["speed_set"] != 60.0 {
 		t.Fatalf("expected speed_set=60, got %v", out)
 	}
-	if want := speedToUnits(60); r.defaultSpeed != want {
+	if want := roarm.SpeedToUnits(60); r.defaultSpeed != want {
 		t.Fatalf("expected defaultSpeed=%d, got %d", want, r.defaultSpeed)
 	}
 }
 
 func TestDoCommand_SetSpeedOutOfRange(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{
 		"command": "set_speed",
@@ -243,7 +247,7 @@ func TestDoCommand_SetSpeedOutOfRange(t *testing.T) {
 }
 
 func TestDoCommand_SetAcceleration(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	out, err := r.DoCommand(context.Background(), map[string]interface{}{
 		"command": "set_acceleration",
@@ -255,13 +259,13 @@ func TestDoCommand_SetAcceleration(t *testing.T) {
 	if out["acceleration_set"] != 100.0 {
 		t.Fatalf("expected acceleration_set=100, got %v", out)
 	}
-	if want := accelToUnits(100); r.defaultAcc != want {
+	if want := roarm.AccelToUnits(100); r.defaultAcc != want {
 		t.Fatalf("expected defaultAcc=%d, got %d", want, r.defaultAcc)
 	}
 }
 
 func TestDoCommand_SetAccelerationOutOfRange(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{
 		"command": "set_acceleration",
@@ -273,22 +277,22 @@ func TestDoCommand_SetAccelerationOutOfRange(t *testing.T) {
 }
 
 func TestDoCommand_GetMotionParams(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	out, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "get_motion_params"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := speedFromUnits(speedToUnits(DefaultSpeedDegsPerSec)); out["current_speed_degs_per_sec"] != want {
+	if want := roarm.SpeedFromUnits(roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec)); out["current_speed_degs_per_sec"] != want {
 		t.Fatalf("expected current_speed_degs_per_sec=%v, got %v", want, out["current_speed_degs_per_sec"])
 	}
-	if want := accelFromUnits(accelToUnits(DefaultAccelDegsPerSecSq)); out["current_acceleration_degs_per_sec_per_sec"] != want {
+	if want := roarm.AccelFromUnits(roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq)); out["current_acceleration_degs_per_sec_per_sec"] != want {
 		t.Fatalf("expected current_acceleration_degs_per_sec_per_sec=%v, got %v", want, out["current_acceleration_degs_per_sec_per_sec"])
 	}
 }
 
 func TestDoCommand_UnknownCommand(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "nonsense"})
 	if err == nil {
@@ -297,14 +301,14 @@ func TestDoCommand_UnknownCommand(t *testing.T) {
 }
 
 func TestArmName(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	r.name = resource.Name{}
 	_ = r.Name()
 }
 
 func TestArmJointPositions(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5, G: 0.6}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5, G: 0.6}}
 	r := newTestArm(t, fc)
 	inputs, err := r.JointPositions(context.Background(), nil)
 	if err != nil {
@@ -319,7 +323,7 @@ func TestArmJointPositions(t *testing.T) {
 }
 
 func TestArmCurrentInputs(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{B: 0.1, S: 0.2, E: 0.3, Wrist: 0.4, R: 0.5}}
 	r := newTestArm(t, fc)
 	inputs, err := r.CurrentInputs(context.Background())
 	if err != nil {
@@ -331,7 +335,7 @@ func TestArmCurrentInputs(t *testing.T) {
 }
 
 func TestArmKinematics(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	m, err := r.Kinematics(context.Background())
 	if err != nil {
@@ -343,7 +347,7 @@ func TestArmKinematics(t *testing.T) {
 }
 
 func TestArmIsMoving(t *testing.T) {
-	fc := &fakeController{Moving: true}
+	fc := &testfake.FakeController{Moving: true}
 	r := newTestArm(t, fc)
 	moving, err := r.IsMoving(context.Background())
 	if err != nil {
@@ -362,7 +366,7 @@ func TestArmIsMoving(t *testing.T) {
 // deadlock (EndPosition locks mu before CurrentInputs→JointPositions
 // re-locks it) that is out of scope for this phase.
 func TestArmGeometriesAfterClose(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_ = r.Close(context.Background())
 	if _, err := r.Geometries(context.Background(), nil); err == nil {
@@ -371,7 +375,7 @@ func TestArmGeometriesAfterClose(t *testing.T) {
 }
 
 func TestArmEndPositionAfterClose(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_ = r.Close(context.Background())
 	if _, err := r.EndPosition(context.Background(), nil); err == nil {
@@ -380,7 +384,7 @@ func TestArmEndPositionAfterClose(t *testing.T) {
 }
 
 func TestArmClose(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	if err := r.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -414,7 +418,7 @@ func TestArmClose(t *testing.T) {
 }
 
 func TestArmMoveThroughJointPositions(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
 	r := newTestArm(t, fc)
 	positions := [][]referenceframe.Input{
 		{0.1, 0, 0, 0, 0},
@@ -426,7 +430,7 @@ func TestArmMoveThroughJointPositions(t *testing.T) {
 }
 
 func TestArmGoToInputs(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
 	r := newTestArm(t, fc)
 	step1 := []referenceframe.Input{0.05, 0, 0, 0, 0}
 	if err := r.GoToInputs(context.Background(), step1); err != nil {
@@ -435,7 +439,7 @@ func TestArmGoToInputs(t *testing.T) {
 }
 
 func TestArmNewClientFromConn(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.NewClientFromConn(context.Background(), nil, "", resource.Name{}, nil)
 	if err == nil {
@@ -452,7 +456,7 @@ func TestNewRoArmM3_ConstructsHTTP(t *testing.T) {
 }
 
 func TestArmReconfigure_MotionOnly(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	// Seed existing config so Reconfigure's needsReopen logic can compare.
 	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
@@ -468,20 +472,20 @@ func TestArmReconfigure_MotionOnly(t *testing.T) {
 	if err := r.Reconfigure(context.Background(), nil, conf); err != nil {
 		t.Fatal(err)
 	}
-	if want := speedToUnits(60); r.defaultSpeed != want {
+	if want := roarm.SpeedToUnits(60); r.defaultSpeed != want {
 		t.Fatalf("expected defaultSpeed=%d, got %d", want, r.defaultSpeed)
 	}
-	if want := accelToUnits(120); r.defaultAcc != want {
+	if want := roarm.AccelToUnits(120); r.defaultAcc != want {
 		t.Fatalf("expected defaultAcc=%d, got %d", want, r.defaultAcc)
 	}
 }
 
 func TestArmStopHoldsCurrentPosition(t *testing.T) {
-	fc := &fakeController{
-		Feedback: FeedbackData{B: 0.5, S: 0.3, E: 0.1, Wrist: 0.2, R: 0.4, G: 0.0},
+	fc := &testfake.FakeController{
+		Feedback: roarm.FeedbackData{B: 0.5, S: 0.3, E: 0.1, Wrist: 0.2, R: 0.4, G: 0.0},
 	}
 	r := &roarmM3{
-		controller: fc, defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec), defaultAcc: accelToUnits(DefaultAccelDegsPerSecSq),
+		controller: fc, defaultSpeed: roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec), defaultAcc: roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq),
 		jointLimits: jointLimitsFromModel(mustLoadModel(t)),
 		logger:      logging.NewTestLogger(t),
 		opMgr:       operation.NewSingleOperationManager(),
@@ -495,20 +499,20 @@ func TestArmStopHoldsCurrentPosition(t *testing.T) {
 			t.Fatalf("joint %d: got %v, want %v", i, fc.LastRadians[i], v)
 		}
 	}
-	expectedStopSpeed := speedToUnits(stopSpeedDegsPerSec)
+	expectedStopSpeed := roarm.SpeedToUnits(roarm.StopSpeedDegsPerSec)
 	if fc.LastSpeed != expectedStopSpeed {
 		t.Fatalf("expected stop speed %d, got %d", expectedStopSpeed, fc.LastSpeed)
 	}
 }
 
 func TestMovePreservesGripperPosition(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	// Gripper currently at some position; MoveToJointPositions must preserve it.
-	fc.Feedback = FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0.5}
+	fc.Feedback = roarm.FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0.5}
 	r := &roarmM3{
 		controller:   fc,
-		defaultSpeed: speedToUnits(DefaultSpeedDegsPerSec),
-		defaultAcc:   accelToUnits(DefaultAccelDegsPerSecSq),
+		defaultSpeed: roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec),
+		defaultAcc:   roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq),
 		jointLimits:  jointLimitsFromModel(mustLoadModel(t)),
 		logger:       logging.NewTestLogger(t),
 		opMgr:        operation.NewSingleOperationManager(),
@@ -528,7 +532,7 @@ func TestMovePreservesGripperPosition(t *testing.T) {
 
 // A reopen that fails must leave the old controller and config in place.
 func TestArmReconfigure_FailedReopenKeepsOldController(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
 	conf := resource.Config{
@@ -553,7 +557,7 @@ func TestArmReconfigure_FailedReopenKeepsOldController(t *testing.T) {
 // snapshotController. This performs exactly that write, so -race flags any
 // reader that touches r.controller directly. Run with -race.
 func TestArmReconfigure_RacesWithReaders(t *testing.T) {
-	fcA, fcB := &fakeController{}, &fakeController{}
+	fcA, fcB := &testfake.FakeController{}, &testfake.FakeController{}
 	r := newTestArm(t, fcA)
 	r.cfg = &RoArmM3Config{Host: "1.2.3.4"}
 	done := make(chan struct{})
@@ -566,7 +570,7 @@ func TestArmReconfigure_RacesWithReaders(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 50; i++ {
-		ctrl := RoArmHandle(fcA)
+		ctrl := roarm.Handle(fcA)
 		if i%2 == 1 {
 			ctrl = fcB
 		}
@@ -578,7 +582,7 @@ func TestArmReconfigure_RacesWithReaders(t *testing.T) {
 }
 
 func TestMoveToJointPositions_WritesThenSettles(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{G: 0.7}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{G: 0.7}}
 	r := newTestArm(t, fc)
 	if err := r.MoveToJointPositions(context.Background(), []referenceframe.Input{0.5, 0, 0, 0, 0}, nil); err != nil {
 		t.Fatal(err)
@@ -589,13 +593,13 @@ func TestMoveToJointPositions_WritesThenSettles(t *testing.T) {
 	if fc.LastRadians[0] != 0.5 || fc.LastRadians[5] != 0.7 {
 		t.Fatalf("target %v: want joint 1 at 0.5 and gripper preserved at 0.7", fc.LastRadians)
 	}
-	if fc.LastSpeed != speedToUnits(DefaultSpeedDegsPerSec) {
-		t.Fatalf("speed %d, want configured default %d", fc.LastSpeed, speedToUnits(DefaultSpeedDegsPerSec))
+	if fc.LastSpeed != roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec) {
+		t.Fatalf("speed %d, want configured default %d", fc.LastSpeed, roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec))
 	}
 }
 
 func TestMoveToJointPositions_SettleErrorIsReturned(t *testing.T) {
-	fc := &fakeController{FailOn: "WaitUntilSettled"}
+	fc := &testfake.FakeController{FailOn: "WaitUntilSettled"}
 	r := newTestArm(t, fc)
 	if err := r.MoveToJointPositions(context.Background(), []referenceframe.Input{0.5, 0, 0, 0, 0}, nil); err == nil {
 		t.Fatal("expected the settle error")
@@ -603,19 +607,19 @@ func TestMoveToJointPositions_SettleErrorIsReturned(t *testing.T) {
 }
 
 func TestMoveToJointPositions_IgnoresExtraSpeed(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	extra := map[string]interface{}{"speed": float64(30), "acceleration": float64(50)}
 	if err := r.MoveToJointPositions(context.Background(), []referenceframe.Input{0.1, 0, 0, 0, 0}, extra); err != nil {
 		t.Fatal(err)
 	}
-	if fc.LastSpeed != speedToUnits(DefaultSpeedDegsPerSec) {
+	if fc.LastSpeed != roarm.SpeedToUnits(roarm.DefaultSpeedDegsPerSec) {
 		t.Fatalf("extra speed must be ignored; got %d", fc.LastSpeed)
 	}
 }
 
 func TestArmIsMoving_TrueWhileAMoveIsInFlight(t *testing.T) {
-	fc := &fakeController{Moving: false}
+	fc := &testfake.FakeController{Moving: false}
 	r := newTestArm(t, fc)
 	r.opInFlight.Store(true)
 	moving, err := r.IsMoving(context.Background())
@@ -630,45 +634,45 @@ func TestArmIsMoving_TrueWhileAMoveIsInFlight(t *testing.T) {
 }
 
 func TestArmStop_UsesTheStopSpeed(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{B: 0.5}}
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{B: 0.5}}
 	r := newTestArm(t, fc)
 	if err := r.Stop(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if fc.LastSpeed != speedToUnits(stopSpeedDegsPerSec) {
-		t.Fatalf("stop speed %d, want %d", fc.LastSpeed, speedToUnits(stopSpeedDegsPerSec))
+	if fc.LastSpeed != roarm.SpeedToUnits(roarm.StopSpeedDegsPerSec) {
+		t.Fatalf("stop speed %d, want %d", fc.LastSpeed, roarm.SpeedToUnits(roarm.StopSpeedDegsPerSec))
 	}
 }
 
 func TestArmNoFeedbackTransport_PositionReadsError(t *testing.T) {
-	fc := &fakeController{FailOn: "GetJointRadians", FailWith: errNoFeedback}
+	fc := &testfake.FakeController{FailOn: "GetJointRadians", FailWith: roarm.ErrNoFeedback}
 	r := newTestArm(t, fc)
-	if _, err := r.JointPositions(context.Background(), nil); !errors.Is(err, errNoFeedback) {
-		t.Fatalf("expected errNoFeedback, got %v", err)
+	if _, err := r.JointPositions(context.Background(), nil); !errors.Is(err, roarm.ErrNoFeedback) {
+		t.Fatalf("expected roarm.ErrNoFeedback, got %v", err)
 	}
-	if _, err := r.EndPosition(context.Background(), nil); !errors.Is(err, errNoFeedback) {
-		t.Fatalf("expected errNoFeedback, got %v", err)
+	if _, err := r.EndPosition(context.Background(), nil); !errors.Is(err, roarm.ErrNoFeedback) {
+		t.Fatalf("expected roarm.ErrNoFeedback, got %v", err)
 	}
 }
 
 func TestDoCommand_GetFeedbackReportsGripperInSoftwareFrame(t *testing.T) {
-	fc := &fakeController{Feedback: FeedbackData{G: 3.0}} // raw wire value
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{G: 3.0}} // raw wire value
 	r := newTestArm(t, fc)
 	out, err := r.DoCommand(context.Background(), map[string]interface{}{"command": "get_feedback"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	joints := out["joints"].(map[string]interface{})
-	if got := joints["gripper"].(float64); math.Abs(got-gripperSoftwareToWire(3.0)) > 1e-9 {
-		t.Fatalf("gripper reported %v, want software frame %v", got, gripperSoftwareToWire(3.0))
+	if got := joints["gripper"].(float64); math.Abs(got-roarm.GripperSoftwareToWire(3.0)) > 1e-9 {
+		t.Fatalf("gripper reported %v, want software frame %v", got, roarm.GripperSoftwareToWire(3.0))
 	}
 }
 
 func TestBridgeSetGripperRad_WaitsOnJoint6(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{
-		"command": cmdSetGripperRad, keyRad: 1.0, keySpeed: 60.0, keyAcc: 200.0,
+		"command": roarm.CmdSetGripperRad, roarm.KeyRad: 1.0, roarm.KeySpeed: 60.0, roarm.KeyAcc: 200.0,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -676,7 +680,7 @@ func TestBridgeSetGripperRad_WaitsOnJoint6(t *testing.T) {
 	if fc.LastJoint != 6 || fc.LastRadians[5] != 1.0 {
 		t.Fatalf("joint %d rad %v", fc.LastJoint, fc.LastRadians)
 	}
-	if fc.LastSpeed != speedToUnits(60) || fc.LastAcc != accelToUnits(200) {
+	if fc.LastSpeed != roarm.SpeedToUnits(60) || fc.LastAcc != roarm.AccelToUnits(200) {
 		t.Fatalf("bridge must convert deg/s and deg/s^2: got %d/%d", fc.LastSpeed, fc.LastAcc)
 	}
 	if fc.SettleCalls != 1 {
@@ -685,10 +689,10 @@ func TestBridgeSetGripperRad_WaitsOnJoint6(t *testing.T) {
 }
 
 func TestBridgeSetGripperRad_NoWait(t *testing.T) {
-	fc := &fakeController{}
+	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
 	_, err := r.DoCommand(context.Background(), map[string]interface{}{
-		"command": cmdSetGripperRad, keyRad: 1.0, keyWait: false,
+		"command": roarm.CmdSetGripperRad, roarm.KeyRad: 1.0, roarm.KeyWait: false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -699,19 +703,19 @@ func TestBridgeSetGripperRad_NoWait(t *testing.T) {
 }
 
 func TestBridgeSetGripperRad_RejectsOutOfRange(t *testing.T) {
-	r := newTestArm(t, &fakeController{})
+	r := newTestArm(t, &testfake.FakeController{})
 	for _, rad := range []float64{-0.5, 2.5} {
-		if _, err := r.DoCommand(context.Background(), map[string]interface{}{"command": cmdSetGripperRad, keyRad: rad}); err == nil {
+		if _, err := r.DoCommand(context.Background(), map[string]interface{}{"command": roarm.CmdSetGripperRad, roarm.KeyRad: rad}); err == nil {
 			t.Fatalf("rad %v should be rejected", rad)
 		}
 	}
 }
 
 func TestBridgeGetGripperRad_NoFeedbackCarriesMarker(t *testing.T) {
-	fc := &fakeController{FailOn: "GetJointRadians", FailWith: errNoFeedback}
+	fc := &testfake.FakeController{FailOn: "GetJointRadians", FailWith: roarm.ErrNoFeedback}
 	r := newTestArm(t, fc)
-	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": cmdGetGripperRad})
-	if err == nil || !strings.Contains(err.Error(), noFeedbackMarker) {
+	_, err := r.DoCommand(context.Background(), map[string]interface{}{"command": roarm.CmdGetGripperRad})
+	if err == nil || !strings.Contains(err.Error(), roarm.NoFeedbackMarker) {
 		t.Fatalf("expected the no-feedback marker to cross the bridge, got %v", err)
 	}
 }

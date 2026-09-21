@@ -1,16 +1,18 @@
 package main
 
 import (
-	"go.viam.com/rdk/components/arm"
-	"go.viam.com/rdk/components/gripper"
+	rdkarm "go.viam.com/rdk/components/arm"
+	rdkgripper "go.viam.com/rdk/components/gripper"
 	"go.viam.com/rdk/module"
 	"go.viam.com/rdk/resource"
-	"waveshareroarm"
+
+	"waveshareroarm/components/arm"
+	"waveshareroarm/components/gripper"
 )
 
 func main() {
 	module.ModularMain(
-		resource.APIModel{API: arm.API, Model: waveshareroarm.RoArmM3},
-		resource.APIModel{API: gripper.API, Model: waveshareroarm.RoArmM3Gripper},
+		resource.APIModel{API: rdkarm.API, Model: arm.Model},
+		resource.APIModel{API: rdkgripper.API, Model: gripper.Model},
 	)
 }

@@ -1,4 +1,4 @@
-package waveshareroarm
+package roarm
 
 import (
 	"bytes"
@@ -18,12 +18,12 @@ import (
 	"go.viam.com/rdk/logging"
 )
 
-// gripperSoftwareToWire converts joint 6 between the software reference frame
+// GripperSoftwareToWire converts joint 6 between the software reference frame
 // (used by Viam APIs and joint limits) and the firmware wire frame. The
 // firmware reports raw "closed" at roughly π rad, so the two frames are
 // related by r_wire = π - r_software. The transform is its own inverse, so
 // the same function converts either direction.
-func gripperSoftwareToWire(r float64) float64 { return math.Pi - r }
+func GripperSoftwareToWire(r float64) float64 { return math.Pi - r }
 
 // Firmware command types (the "T" field). Only the ones this module sends.
 const (
@@ -38,10 +38,6 @@ const (
 	DefaultHTTPTimeout   = 5 * time.Second
 	DefaultSerialTimeout = 1 * time.Second
 )
-
-// gripperJointLimits is joint 6's software-frame range in radians (about
-// -11.5 to 109 degrees). Joints 1-5 take their limits from roarm_m3.json.
-var gripperJointLimits = [2]float64{-0.2, 1.9}
 
 // Command represents a JSON command to send to the RoArm
 type Command struct {
@@ -82,8 +78,8 @@ type FeedbackData struct {
 	TG    float64 `json:"tG"`  // Torque Joint 6
 }
 
-// RoArmController handles communication with the WaveShare RoArm-M3
-type RoArmController struct {
+// Controller handles communication with the WaveShare RoArm-M3
+type Controller struct {
 	mu            sync.Mutex
 	logger        logging.Logger
 	httpHost      string
@@ -98,8 +94,8 @@ type RoArmController struct {
 	canReadFeedback bool
 }
 
-// RoArmConfig represents the configuration for the RoArm controller
-type RoArmConfig struct {
+// Config represents the configuration for the RoArm controller
+type Config struct {
 	// HTTP configuration
 	Host string `json:"host,omitempty"`
 
@@ -113,9 +109,9 @@ type RoArmConfig struct {
 	Logger        logging.Logger `json:"-"` // Logger for debugging
 }
 
-// NewRoArmController creates a new RoArm controller
-func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
-	controller := &RoArmController{
+// NewController creates a new RoArm controller
+func NewController(config *Config) (*Controller, error) {
+	controller := &Controller{
 		httpTimeout:   DefaultHTTPTimeout,
 		serialTimeout: DefaultSerialTimeout,
 		logger:        config.Logger,
@@ -138,7 +134,7 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 	if config.Host != "" {
 		// HTTP mode
 		controller.isHTTP = true
-		controller.canReadFeedback = httpSupportsFeedback
+		controller.canReadFeedback = HTTPSupportsFeedback
 		controller.httpHost = config.Host
 		controller.httpClient = &http.Client{
 			Timeout: controller.httpTimeout,
@@ -180,7 +176,7 @@ func NewRoArmController(config *RoArmConfig) (*RoArmController, error) {
 }
 
 // Close closes the controller connection
-func (c *RoArmController) Close(ctx context.Context) error {
+func (c *Controller) Close(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.isHTTP && c.serialPort != nil {
@@ -231,20 +227,20 @@ func extractLastValidFeedback(buf []byte) (*FeedbackData, []byte, bool) {
 // cmdFeedbackGet. Nothing else is ever waited for (see write vs query).
 var feedbackResponseTs = map[int]bool{feedbackFrameT: true, cmdFeedbackGet: true}
 
-// httpSupportsFeedback records whether this firmware's /js endpoint returns a
+// HTTPSupportsFeedback records whether this firmware's /js endpoint returns a
 // T:1051 body for a T:105 request. Bench task B9 decides it. When false the
 // controller runs in HTTP mode with canReadFeedback=false (see settle.go).
-const httpSupportsFeedback = true
+const HTTPSupportsFeedback = true
 
-// errNoFeedback is returned by every position read on a transport that
-// cannot return feedback. Its message contains noFeedbackMarker so the
+// ErrNoFeedback is returned by every position read on a transport that
+// cannot return feedback. Its message contains NoFeedbackMarker so the
 // gripper can recognise it after it has crossed the DoCommand boundary.
-var errNoFeedback = errors.New(noFeedbackMarker + "; position reads need a serial connection")
+var ErrNoFeedback = errors.New(NoFeedbackMarker + "; position reads need a serial connection")
 
 // write sends a control command and returns once it is on the wire. The
 // firmware never answers these (only FEEDBACK_GET gets a reply), so waiting
 // would only ever time out or mistake a command echo for an answer.
-func (c *RoArmController) write(ctx context.Context, cmd *Command) error {
+func (c *Controller) write(ctx context.Context, cmd *Command) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	cmdBytes, err := json.Marshal(cmd)
@@ -259,9 +255,9 @@ func (c *RoArmController) write(ctx context.Context, cmd *Command) error {
 }
 
 // query sends FEEDBACK_GET and waits for the T:1051 frame that answers it.
-func (c *RoArmController) query(ctx context.Context) (*FeedbackData, error) {
+func (c *Controller) query(ctx context.Context) (*FeedbackData, error) {
 	if !c.canReadFeedback {
-		return nil, errNoFeedback
+		return nil, ErrNoFeedback
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -287,7 +283,7 @@ func (c *RoArmController) query(ctx context.Context) (*FeedbackData, error) {
 }
 
 // httpGet performs the /js?json= request and returns the raw body.
-func (c *RoArmController) httpGet(ctx context.Context, cmdBytes []byte) ([]byte, error) {
+func (c *Controller) httpGet(ctx context.Context, cmdBytes []byte) ([]byte, error) {
 	requestURL := fmt.Sprintf("http://%s/js?json=%s", c.httpHost, url.QueryEscape(string(cmdBytes)))
 	reqCtx, cancel := context.WithTimeout(ctx, c.httpTimeout)
 	defer cancel()
@@ -316,7 +312,7 @@ func (c *RoArmController) httpGet(ctx context.Context, cmdBytes []byte) ([]byte,
 }
 
 // serialWrite flushes stale input, then writes one newline-terminated frame.
-func (c *RoArmController) serialWrite(cmdBytes []byte) error {
+func (c *Controller) serialWrite(cmdBytes []byte) error {
 	cmdBytes = append(cmdBytes, '\n')
 	if c.verboseWire {
 		c.logger.Debugf("Sending serial command: %s", string(cmdBytes))
@@ -332,7 +328,7 @@ func (c *RoArmController) serialWrite(cmdBytes []byte) error {
 
 // serialReadFeedback reads until a T:1051 feedback frame arrives, dropping
 // stale or echoed frames, or until the read times out or ctx is cancelled.
-func (c *RoArmController) serialReadFeedback(ctx context.Context) (*FeedbackData, error) {
+func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, error) {
 	// Read response with proper frame detection (based on Python ReadLine class)
 	buffer := make([]byte, 256)
 	responseBuffer := bytes.Buffer{}
@@ -415,20 +411,20 @@ func (c *RoArmController) serialReadFeedback(ctx context.Context) (*FeedbackData
 // WaitUntilSettled blocks until the masked joints reach target or stop
 // moving. See settle.go. On a transport that cannot read feedback it sleeps
 // the plain time estimate (half the timeout) and returns nil positions.
-func (c *RoArmController) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
+func (c *Controller) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
 	if !c.canReadFeedback {
-		return nil, sleepCtx(ctx, timeout/2)
+		return nil, SleepCtx(ctx, timeout/2)
 	}
-	pos, stalled, err := waitUntilSettled(ctx, c.GetJointRadians, sleepCtx, target, mask, timeout)
+	pos, stalled, err := waitUntilSettled(ctx, c.GetJointRadians, SleepCtx, target, mask, timeout)
 	if stalled {
 		c.logger.Debugf("settle: joints stopped short of target (at %v, wanted %v)", pos, target)
 	}
 	return pos, err
 }
 
-// IsMoving compares two position samples isMovingProbeGap apart. On a
+// IsMoving compares two position samples IsMovingProbeGap apart. On a
 // transport that cannot read feedback it reports false.
-func (c *RoArmController) IsMoving(ctx context.Context) (bool, error) {
+func (c *Controller) IsMoving(ctx context.Context) (bool, error) {
 	if !c.canReadFeedback {
 		return false, nil
 	}
@@ -436,18 +432,18 @@ func (c *RoArmController) IsMoving(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := sleepCtx(ctx, isMovingProbeGap); err != nil {
+	if err := SleepCtx(ctx, IsMovingProbeGap); err != nil {
 		return false, err
 	}
 	b, err := c.GetJointRadians(ctx)
 	if err != nil {
 		return false, err
 	}
-	return maxTravel(a, b, nil) > stallRad, nil
+	return MaxTravel(a, b, nil) > StallRad, nil
 }
 
 // SetTorque enables or disables torque for all joints
-func (c *RoArmController) SetTorque(ctx context.Context, enable bool) error {
+func (c *Controller) SetTorque(ctx context.Context, enable bool) error {
 	cmd := &Command{
 		T: cmdTorqueSet,
 		Data: map[string]interface{}{
@@ -462,7 +458,7 @@ func (c *RoArmController) SetTorque(ctx context.Context, enable bool) error {
 }
 
 // SetLED controls the LED brightness (0-255)
-func (c *RoArmController) SetLED(ctx context.Context, brightness int) error {
+func (c *Controller) SetLED(ctx context.Context, brightness int) error {
 	if err := ValidateLEDBrightness(brightness); err != nil {
 		return err
 	}
@@ -478,14 +474,14 @@ func (c *RoArmController) SetLED(ctx context.Context, brightness int) error {
 }
 
 // SetJointRadian moves a single joint to the specified radian position
-func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian float64, speed, acc int) error {
+func (c *Controller) SetJointRadian(ctx context.Context, joint int, radian float64, speed, acc int) error {
 	if joint < 1 || joint > 6 {
 		return fmt.Errorf("joint must be 1-6, got %d", joint)
 	}
 
 	wireRadian := radian
 	if joint == 6 {
-		wireRadian = gripperSoftwareToWire(radian)
+		wireRadian = GripperSoftwareToWire(radian)
 	}
 
 	cmd := &Command{
@@ -506,7 +502,7 @@ func (c *RoArmController) SetJointRadian(ctx context.Context, joint int, radian 
 }
 
 // SetJointRadians moves all joints to the specified radian positions
-func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64, speed, acc int) error {
+func (c *Controller) SetJointRadians(ctx context.Context, radians []float64, speed, acc int) error {
 	if len(radians) != 6 {
 		return fmt.Errorf("expected 6 joint positions, got %d", len(radians))
 	}
@@ -519,7 +515,7 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 			"elbow":    radians[2],
 			"wrist":    radians[3],
 			"roll":     radians[4],
-			"hand":     gripperSoftwareToWire(radians[5]),
+			"hand":     GripperSoftwareToWire(radians[5]),
 			"spd":      speed,
 			"acc":      acc,
 		},
@@ -533,7 +529,7 @@ func (c *RoArmController) SetJointRadians(ctx context.Context, radians []float64
 }
 
 // GetJointRadians returns the current joint positions in radians
-func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error) {
+func (c *Controller) GetJointRadians(ctx context.Context) ([]float64, error) {
 	feedback, err := c.query(ctx)
 	if err != nil {
 		return nil, err
@@ -545,14 +541,14 @@ func (c *RoArmController) GetJointRadians(ctx context.Context) ([]float64, error
 		feedback.E,                        // Joint 3
 		feedback.Wrist,                    // Joint 4
 		feedback.R,                        // Joint 5
-		gripperSoftwareToWire(feedback.G), // Joint 6 (gripper)
+		GripperSoftwareToWire(feedback.G), // Joint 6 (gripper)
 	}
 
 	return radians, nil
 }
 
 // GetFeedback returns the full feedback data from the arm
-func (c *RoArmController) GetFeedback(ctx context.Context) (*FeedbackData, error) {
+func (c *Controller) GetFeedback(ctx context.Context) (*FeedbackData, error) {
 	return c.query(ctx)
 }
 

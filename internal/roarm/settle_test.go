@@ -1,4 +1,4 @@
-package waveshareroarm
+package roarm
 
 import (
 	"context"
@@ -79,7 +79,7 @@ func TestSettle_MaskIgnoresOtherJoints(t *testing.T) {
 	// Joint 6 is far from its target but unmasked; joints 1-5 are settled.
 	target := []float64{0, 0, 0, 0, 0, 1.9}
 	read, _ := scriptedReads([]float64{0, 0, 0, 0, 0, -0.2})
-	_, _, err := waitUntilSettled(context.Background(), read, noSleep, target, armMask, time.Second)
+	_, _, err := waitUntilSettled(context.Background(), read, noSleep, target, ArmMask, time.Second)
 	if err != nil {
 		t.Fatalf("masked-out joint should not block settle: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSettle_MaskIgnoresOtherJoints(t *testing.T) {
 
 func TestSettle_TimesOut(t *testing.T) {
 	target := []float64{1, 0, 0, 0, 0, 0}
-	// Creeps 0.01 per poll (more than stallRad) toward a target it never
+	// Creeps 0.01 per poll (more than StallRad) toward a target it never
 	// reaches inside the poll budget: never within tolerance, never stalled.
 	i := 0.0
 	read := func(context.Context) ([]float64, error) { i += 0.01; return []float64{i, 0, 0, 0, 0, 0}, nil }
@@ -116,14 +116,14 @@ func TestSettle_ShortFeedbackIsAnError(t *testing.T) {
 
 func TestSettleTimeoutFor(t *testing.T) {
 	// 90 degrees at 50 deg/s is 1.8 s; times 2 is 3.6 s.
-	got := settleTimeoutFor(90*3.14159265/180, speedToUnits(50))
+	got := SettleTimeoutFor(90*3.14159265/180, SpeedToUnits(50))
 	if got < 3500*time.Millisecond || got > 3700*time.Millisecond {
 		t.Fatalf("got %v want ~3.6s", got)
 	}
-	if settleTimeoutFor(0, speedToUnits(50)) != minSettleTimeout {
+	if SettleTimeoutFor(0, SpeedToUnits(50)) != minSettleTimeout {
 		t.Fatal("floor")
 	}
-	if settleTimeoutFor(100, speedToUnits(3)) != maxSettleTimeout {
+	if SettleTimeoutFor(100, SpeedToUnits(3)) != maxSettleTimeout {
 		t.Fatal("cap")
 	}
 }
@@ -131,10 +131,10 @@ func TestSettleTimeoutFor(t *testing.T) {
 func TestMaxTravel(t *testing.T) {
 	a := []float64{0, 0, 0, 0, 0, 0}
 	b := []float64{0.1, -0.5, 0, 0, 0, 2}
-	if got := maxTravel(a, b, nil); got != 2 {
+	if got := MaxTravel(a, b, nil); got != 2 {
 		t.Fatalf("nil mask = all joints: got %v", got)
 	}
-	if got := maxTravel(a, b, armMask); got != 0.5 {
+	if got := MaxTravel(a, b, ArmMask); got != 0.5 {
 		t.Fatalf("arm mask: got %v", got)
 	}
 }
