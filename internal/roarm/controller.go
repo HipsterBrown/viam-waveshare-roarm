@@ -92,6 +92,10 @@ type Controller struct {
 	// canReadFeedback is true when this transport can answer a T:105
 	// feedback request. Serial always can; HTTP depends on the firmware.
 	canReadFeedback bool
+	// resetFailures counts consecutive ResetInputBuffer failures. Guarded by
+	// mu, since serialWrite (the only place it's touched) is only called
+	// with mu held.
+	resetFailures int
 }
 
 // Config represents the configuration for the RoArm controller
@@ -212,15 +216,54 @@ func extractLastValidFeedback(buf []byte) (*FeedbackData, []byte, bool) {
 			continue
 		}
 		candidate := buf[startIdx : endIdx+1]
-		var fb FeedbackData
-		if err := json.Unmarshal(candidate, &fb); err == nil {
-			return &fb, candidate, true
+		if fb, ok, _ := parseFeedbackFrame(candidate); ok {
+			return fb, candidate, true
 		}
-		// Candidate is corrupt — narrow the search to content strictly
-		// before its `{` so the next iteration considers earlier frames.
+		// The candidate is corrupt, incomplete, or a frame the module did not
+		// ask for; narrow the search to content strictly before its `{` so the
+		// next iteration considers earlier frames.
 		windowEnd = startIdx
 	}
 	return nil, nil, false
+}
+
+// feedbackRequiredKeys are the fields the module reads from every frame: the
+// frame type and the six joint angles. A frame missing any of them is treated
+// exactly like a corrupt one, because FeedbackData's value fields would
+// otherwise turn a missing angle into a confident 0 (audit 2.3). The Cartesian
+// and torque fields stay optional: only get_feedback reports them, and a
+// missing one there is cosmetic.
+var feedbackRequiredKeys = []string{"T", "b", "s", "e", "t", "r", "g"}
+
+// parseFeedbackFrame decodes one frame and accepts it only when it is complete
+// and its T is one the firmware sends in reply to a feedback request. Decoding
+// through a map rather than straight into FeedbackData is what makes a missing
+// field visible; every value in a frame is a number, so the map decode is exact.
+// Note the decode error is checked BEFORE the required keys: json.Unmarshal
+// leaves a map partly populated when it fails on a later value, so checking
+// the keys first would accept a frame it had already rejected.
+//
+// wrongT separates a well-formed frame of the wrong type from a corrupt one:
+// the first is an unsolicited frame the module did not ask for (audit 2.8) and
+// the second is a torn one, and the health counters keep them apart.
+func parseFeedbackFrame(raw []byte) (fb *FeedbackData, ok, wrongT bool) {
+	var m map[string]float64
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, false, false
+	}
+	for _, k := range feedbackRequiredKeys {
+		if _, present := m[k]; !present {
+			return nil, false, false
+		}
+	}
+	if !feedbackResponseTs[int(m["T"])] {
+		return nil, false, true
+	}
+	var out FeedbackData
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, false, false
+	}
+	return &out, true, false
 }
 
 // feedbackResponseTs are the frame types the firmware sends in reply to a
@@ -318,10 +361,23 @@ func (c *Controller) serialWrite(cmdBytes []byte) error {
 		c.logger.Debugf("Sending serial command: %s", string(cmdBytes))
 	}
 	if err := c.serialPort.ResetInputBuffer(); err != nil {
-		c.logger.Warnf("ResetInputBuffer failed: %v", err)
+		c.resetFailures++
+		// One failure is a warning; a second in a row means the module can no
+		// longer tell a fresh frame from a stale one, which is the premise the
+		// whole read path rests on (audit 2.7).
+		if c.resetFailures >= 2 {
+			return fmt.Errorf("cannot flush the serial input buffer (%d consecutive failures), so fresh and stale frames are indistinguishable: %w", c.resetFailures, err)
+		}
+		c.logger.Warnf("ResetInputBuffer failed, continuing once: %v", err)
+	} else {
+		c.resetFailures = 0
 	}
-	if _, err := c.serialPort.Write(cmdBytes); err != nil {
+	n, err := c.serialPort.Write(cmdBytes)
+	if err != nil {
 		return fmt.Errorf("failed to write to serial port: %w", err)
+	}
+	if n != len(cmdBytes) {
+		return fmt.Errorf("short write to serial port: %d of %d bytes; the firmware will discard the truncated command", n, len(cmdBytes))
 	}
 	return nil
 }
@@ -389,19 +445,13 @@ func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, err
 		// `}\r\n` terminators, so we only surface clean frames.
 		feedback, jsonData, ok := extractLastValidFeedback(responseBuffer.Bytes())
 		if !ok {
+			if c.verboseWire {
+				c.logger.Debugf("no complete, valid feedback frame yet in: %s", responseBuffer.String())
+			}
 			continue
 		}
 		if c.verboseWire {
 			c.logger.Debugf("Parsing JSON response: %s", string(jsonData))
-		}
-
-		// Only accept response frames whose T matches what the firmware
-		// is expected to send for this request T. Stale streaming frames
-		// (e.g. unsolicited 1051 feedback) are dropped and we keep reading.
-		if !feedbackResponseTs[feedback.T] {
-			c.logger.Warnf("dropping stale/unexpected frame T=%d while waiting for feedback", feedback.T)
-			responseBuffer.Reset()
-			continue
 		}
 
 		return feedback, nil

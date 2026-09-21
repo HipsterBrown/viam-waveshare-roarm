@@ -81,7 +81,7 @@ func TestCommandMarshalJSON_EmptyData(t *testing.T) {
 }
 
 func TestExtractLastValidFeedback_CleanSingle(t *testing.T) {
-	fb, _, ok := extractLastValidFeedback([]byte("{\"T\":1051,\"b\":0.5}\r\n"))
+	fb, _, ok := extractLastValidFeedback([]byte("{\"T\":1051,\"b\":0.5,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"))
 	if !ok {
 		t.Fatal("expected ok")
 	}
@@ -91,7 +91,7 @@ func TestExtractLastValidFeedback_CleanSingle(t *testing.T) {
 }
 
 func TestExtractLastValidFeedback_MultipleCleanReturnsLatest(t *testing.T) {
-	buf := []byte("{\"T\":1,\"b\":0.1}\r\n{\"T\":1051,\"b\":0.9}\r\n")
+	buf := []byte("{\"T\":1,\"b\":0.1}\r\n{\"T\":1051,\"b\":0.9,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n")
 	fb, _, ok := extractLastValidFeedback(buf)
 	if !ok {
 		t.Fatal("expected ok")
@@ -107,7 +107,7 @@ func TestExtractLastValidFeedback_MultipleCleanReturnsLatest(t *testing.T) {
 // wraps garbage that won't parse. When a clean earlier frame exists in
 // the buffer, we should fall back to it rather than failing.
 func TestExtractLastValidFeedback_CorruptLatestFallsBackToClean(t *testing.T) {
-	clean := "{\"T\":1051,\"b\":0.42}\r\n"
+	clean := "{\"T\":1051,\"b\":0.42,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"
 	// Corrupt blob: two partial frames merged, mid-number splice, no
 	// interior `{` so the outermost window is the whole mess.
 	corrupt := "{\"T\":1051,\"x\":1.0,\"g\":3.1768742\"x\":1.0,\"g\":3.176874212,\"tR\":0}\r\n"
@@ -424,14 +424,16 @@ func TestHTTPCommand_BadJSON_ReturnsError(t *testing.T) {
 
 // fakeSerialPort implements serial.Port for testing the serial transport.
 type fakeSerialPort struct {
-	written  []byte
-	toRead   []byte
-	frames   [][]byte // popped one per ResetInputBuffer (i.e. per query)
-	readErr  error
-	readPos  int
-	closed   bool
-	resetIn  int
-	resetOut int
+	written         []byte
+	toRead          []byte
+	frames          [][]byte // popped one per ResetInputBuffer (i.e. per query)
+	readErr         error
+	readPos         int
+	closed          bool
+	resetIn         int
+	resetOut        int
+	shortWriteAfter int   // when > 0, Write only accepts this many bytes
+	resetErr        error // when set, ResetInputBuffer returns this error
 }
 
 func (p *fakeSerialPort) SetMode(mode *serial.Mode) error { return nil }
@@ -448,12 +450,19 @@ func (p *fakeSerialPort) Read(buf []byte) (int, error) {
 	return n, nil
 }
 func (p *fakeSerialPort) Write(b []byte) (int, error) {
-	p.written = append(p.written, b...)
-	return len(b), nil
+	n := len(b)
+	if p.shortWriteAfter > 0 && p.shortWriteAfter < n {
+		n = p.shortWriteAfter
+	}
+	p.written = append(p.written, b[:n]...)
+	return n, nil
 }
 func (p *fakeSerialPort) Drain() error { return nil }
 func (p *fakeSerialPort) ResetInputBuffer() error {
 	p.resetIn++
+	if p.resetErr != nil {
+		return p.resetErr
+	}
 	if len(p.frames) > 0 {
 		p.toRead, p.frames, p.readPos = p.frames[0], p.frames[1:], 0
 	}
@@ -483,7 +492,7 @@ func newSerialTestController(t *testing.T, port *fakeSerialPort) *Controller {
 
 func TestSendSerialCommand_ReadsCompleteFrame(t *testing.T) {
 	port := &fakeSerialPort{
-		toRead: []byte("{\"T\":1051,\"b\":0.5}\r\n"),
+		toRead: []byte("{\"T\":1051,\"b\":0.5,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"),
 	}
 	c := newSerialTestController(t, port)
 	fb, err := c.GetFeedback(context.Background())
@@ -528,7 +537,7 @@ func TestSendSerialCommand_FiltersUnexpectedT(t *testing.T) {
 	// the buffer so the LAST frame is 1051 — parseLastJSONFrame picks the
 	// last, and 1051 is accepted.
 	port := &fakeSerialPort{
-		toRead: []byte("{\"T\":999}\r\n{\"T\":1051,\"b\":0.1}\r\n"),
+		toRead: []byte("{\"T\":999}\r\n{\"T\":1051,\"b\":0.1,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"),
 	}
 	c := newSerialTestController(t, port)
 	fb, err := c.GetFeedback(context.Background())
@@ -544,7 +553,7 @@ func TestSendSerialCommand_BadJSONInFrame(t *testing.T) {
 	// Send a syntactically bad frame first, then a valid one — the controller
 	// should reset the buffer and keep reading.
 	port := &fakeSerialPort{
-		toRead: []byte("{bogus}\r\n{\"T\":1051,\"b\":0.25}\r\n"),
+		toRead: []byte("{bogus}\r\n{\"T\":1051,\"b\":0.25,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"),
 	}
 	c := newSerialTestController(t, port)
 	fb, err := c.GetFeedback(context.Background())
@@ -606,7 +615,7 @@ func TestSerialWrite_ReturnsWithoutAResponse(t *testing.T) {
 // Feedback still waits for, and filters to, a T:1051 frame.
 func TestSerialQuery_DropsEchoAndReturnsFeedback(t *testing.T) {
 	port := &fakeSerialPort{
-		toRead: []byte("{\"T\":102,\"base\":0}\r\n{\"T\":1051,\"b\":0.25}\r\n"),
+		toRead: []byte("{\"T\":102,\"base\":0}\r\n{\"T\":1051,\"b\":0.25,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"),
 	}
 	c := newSerialTestController(t, port)
 	fb, err := c.GetFeedback(context.Background())
@@ -646,8 +655,8 @@ func TestHTTPQuery_RejectsNonFeedbackBody(t *testing.T) {
 
 func TestControllerIsMoving_ComparesTwoFeedbackFrames(t *testing.T) {
 	moving := &fakeSerialPort{frames: [][]byte{
-		[]byte("{\"T\":1051,\"b\":0.10}\r\n"),
-		[]byte("{\"T\":1051,\"b\":0.30}\r\n"),
+		[]byte("{\"T\":1051,\"b\":0.10,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"),
+		[]byte("{\"T\":1051,\"b\":0.30,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"),
 	}}
 	c := newSerialTestController(t, moving)
 	got, err := c.IsMoving(context.Background())
@@ -655,8 +664,8 @@ func TestControllerIsMoving_ComparesTwoFeedbackFrames(t *testing.T) {
 		t.Fatalf("expected moving, got %v err=%v", got, err)
 	}
 	still := &fakeSerialPort{frames: [][]byte{
-		[]byte("{\"T\":1051,\"b\":0.10}\r\n"),
-		[]byte("{\"T\":1051,\"b\":0.101}\r\n"),
+		[]byte("{\"T\":1051,\"b\":0.10,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"),
+		[]byte("{\"T\":1051,\"b\":0.101,\"s\":0,\"e\":0,\"t\":0,\"r\":0,\"g\":3.0}\r\n"),
 	}}
 	c = newSerialTestController(t, still)
 	got, err = c.IsMoving(context.Background())
@@ -682,5 +691,79 @@ func TestControllerNoFeedback_Fallbacks(t *testing.T) {
 	}
 	if time.Since(start) < 90*time.Millisecond {
 		t.Fatal("expected the plain time estimate to be slept")
+	}
+}
+
+// A frame is believed only when it carries every field the module reads.
+// Audit 2.3: FeedbackData's value fields make a missing joint read as 0, so a
+// torn frame whose remainder parses as JSON would put the arm at its zero pose.
+func TestExtractRejectsIncompleteFrames(t *testing.T) {
+	full := `{"T":1051,"x":1,"y":2,"z":3,"b":0.1,"s":0.2,"e":0.3,"t":0.4,"r":0.5,"g":3.0}` + "\r\n"
+	for _, tc := range []struct {
+		name string
+		buf  string
+		ok   bool
+	}{
+		{"complete", full, true},
+		{"no torque or cartesian fields", `{"T":1051,"b":0.1,"s":0.2,"e":0.3,"t":0.4,"r":0.5,"g":3.0}` + "\r\n", true},
+		{"T only", `{"T":1051}` + "\r\n", false},
+		{"empty object", `{}` + "\r\n", false},
+		{"missing g", `{"T":1051,"b":0.1,"s":0.2,"e":0.3,"t":0.4,"r":0.5}` + "\r\n", false},
+		{"non-numeric b", `{"T":1051,"b":"x","s":0.2,"e":0.3,"t":0.4,"r":0.5,"g":3.0}` + "\r\n", false},
+		{"torn", `{"T":1051,"x":1` + "\r\n", false},
+		{"wrong T", `{"T":102,"b":0.1,"s":0.2,"e":0.3,"t":0.4,"r":0.5,"g":3.0}` + "\r\n", false},
+	} {
+		_, _, ok := extractLastValidFeedback([]byte(tc.buf))
+		if ok != tc.ok {
+			t.Fatalf("%s: got ok=%v, want %v", tc.name, ok, tc.ok)
+		}
+	}
+}
+
+// The walk continues past an invalid newest frame instead of surfacing it, so
+// a good frame earlier in the buffer is still found rather than discarded.
+func TestExtractWalksPastAnInvalidNewestFrame(t *testing.T) {
+	good := `{"T":1051,"b":0.7,"s":0,"e":0,"t":0,"r":0,"g":3.0}`
+	buf := good + "\r\n" + `{"T":1051}` + "\r\n"
+	fb, _, ok := extractLastValidFeedback([]byte(buf))
+	if !ok || fb.B != 0.7 {
+		t.Fatalf("ok=%v b=%v; want the earlier complete frame", ok, fb)
+	}
+}
+
+// Audit 2.4: a port that accepts only part of the buffer must be an error, not
+// a truncated command the firmware silently discards.
+func TestSerialWriteRejectsAShortWrite(t *testing.T) {
+	port := &fakeSerialPort{shortWriteAfter: 5}
+	c := newSerialTestController(t, port)
+	err := c.SetTorque(context.Background(), true)
+	if err == nil || !strings.Contains(err.Error(), "short write") {
+		t.Fatalf("expected a short-write error, got %v", err)
+	}
+}
+
+// A ResetInputBuffer failure means fresh frames can no longer be told from
+// stale ones, which is the premise the read path rests on. One failure warns;
+// two consecutive failures are an error.
+func TestResetInputBufferFailureEscalates(t *testing.T) {
+	port := &fakeSerialPort{resetErr: errors.New("device busy"), toRead: []byte(`{"T":1051,"b":0,"s":0,"e":0,"t":0,"r":0,"g":3.0}` + "\r\n")}
+	c := newSerialTestController(t, port)
+	if _, err := c.GetFeedback(context.Background()); err != nil {
+		t.Fatalf("the first failure should only warn: %v", err)
+	}
+	// Both assertions below are load-bearing. Without the escalation this call
+	// still returns an error, because the fake's read position does not reset
+	// between calls and the read times out instead -- so asserting only err !=
+	// nil passes with the fix reverted and tests nothing.
+	start := time.Now()
+	_, err := c.GetFeedback(context.Background())
+	if err == nil {
+		t.Fatal("the second consecutive failure should be an error")
+	}
+	if !strings.Contains(err.Error(), "consecutive failures") {
+		t.Fatalf("the error should name the reset failure, not something downstream: %v", err)
+	}
+	if el := time.Since(start); el > c.serialTimeout/2 {
+		t.Fatalf("the escalation should short-circuit before any read is attempted, took %v", el)
 	}
 }
