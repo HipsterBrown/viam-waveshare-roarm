@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,7 +38,41 @@ const (
 	// Default timeouts
 	DefaultHTTPTimeout   = 5 * time.Second
 	DefaultSerialTimeout = 1 * time.Second
+
+	// queryAttempts is how many times a feedback request is tried before the
+	// caller sees an error. Audit 2.5: a 15-second settle can poll hundreds of
+	// times, so a single dropped frame must not fail the whole operation.
+	queryAttempts   = 3
+	queryRetryDelay = 20 * time.Millisecond
+	// serialChunkTimeout is the port's read timeout: short so the read loop
+	// re-checks its context and its own deadline about every 20 ms. The frame
+	// timeout is serialTimeout and is owned by serialReadFeedback.
+	serialChunkTimeout = 20 * time.Millisecond
 )
+
+// fatalTransport reports whether err is worth no retry: the port is gone, the
+// caller has given up, or the command could not be put on the wire.
+// go.bug.st/serial never returns io.EOF (a read timeout is (0, nil)); an
+// unplug is a PortError whose Code is PortClosed.
+func fatalTransport(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Context errors are deliberately NOT classified here. Every attempt runs
+	// under its own context with the per-attempt budget, so an ordinary frame
+	// timeout surfaces as context.DeadlineExceeded just as often as it
+	// surfaces as the read loop's own timeout error, depending on which of the
+	// two timers fires first. Calling that fatal would let the first slow read
+	// kill every remaining attempt, silently disabling retries on a machine
+	// where the race lands the other way. The caller's own cancellation is
+	// handled structurally instead: queryWithRetries checks the CALLER's
+	// ctx.Err() around each attempt.
+	var pe interface{ Code() serial.PortErrorCode }
+	if errors.As(err, &pe) && pe.Code() == serial.PortClosed {
+		return true
+	}
+	return strings.Contains(err.Error(), "short write")
+}
 
 // Command represents a JSON command to send to the RoArm
 type Command struct {
@@ -96,6 +131,8 @@ type Controller struct {
 	// mu, since serialWrite (the only place it's touched) is only called
 	// with mu held.
 	resetFailures int
+	// health holds the link health counters. See health.go.
+	health HealthSnapshot
 }
 
 // Config represents the configuration for the RoArm controller
@@ -140,9 +177,11 @@ func NewController(config *Config) (*Controller, error) {
 		controller.isHTTP = true
 		controller.canReadFeedback = HTTPSupportsFeedback
 		controller.httpHost = config.Host
-		controller.httpClient = &http.Client{
-			Timeout: controller.httpTimeout,
-		}
+		// No Timeout here: each request's deadline comes from its context
+		// (httpGet's per-request WithTimeout, itself now bounded per attempt
+		// by queryWithRetries), so a slow attempt doesn't also need a second,
+		// client-wide clock racing it.
+		controller.httpClient = &http.Client{}
 	} else if config.Port != "" {
 		// Serial mode
 		controller.isHTTP = false
@@ -165,8 +204,10 @@ func NewController(config *Config) (*Controller, error) {
 			return nil, fmt.Errorf("failed to open serial port: %w", err)
 		}
 
-		// Set read timeout
-		if err := port.SetReadTimeout(controller.serialTimeout); err != nil {
+		// Set read timeout. This is the port's per-read chunk timeout, not the
+		// frame timeout: short, so serialReadFeedback's loop re-checks its
+		// context and deadline often instead of blocking for a whole second.
+		if err := port.SetReadTimeout(serialChunkTimeout); err != nil {
 			port.Close()
 			return nil, fmt.Errorf("failed to set read timeout: %w", err)
 		}
@@ -298,6 +339,9 @@ func (c *Controller) write(ctx context.Context, cmd *Command) error {
 }
 
 // query sends FEEDBACK_GET and waits for the T:1051 frame that answers it.
+// Audit 2.5: a dropped frame is common enough (a 15-second settle can poll
+// hundreds of times) that failing the whole operation on one is wrong, so
+// each transport gets up to queryAttempts tries via queryWithRetries.
 func (c *Controller) query(ctx context.Context) (*FeedbackData, error) {
 	if !c.canReadFeedback {
 		return nil, ErrNoFeedback
@@ -309,20 +353,96 @@ func (c *Controller) query(ctx context.Context) (*FeedbackData, error) {
 		return nil, fmt.Errorf("failed to marshal command: %w", err)
 	}
 	if c.isHTTP {
-		body, err := c.httpGet(ctx, cmdBytes)
-		if err != nil {
+		return c.queryWithRetries(ctx, c.httpTimeout, func(attemptCtx context.Context) (*FeedbackData, error) {
+			return c.queryOnceHTTP(attemptCtx, cmdBytes)
+		})
+	}
+	return c.queryWithRetries(ctx, c.serialTimeout, func(attemptCtx context.Context) (*FeedbackData, error) {
+		return c.queryOnce(attemptCtx, cmdBytes)
+	})
+}
+
+// queryWithRetries runs attempt up to queryAttempts times: the same retry
+// shape for both transports, just with each one's own per-attempt timeout
+// and read. A non-fatal error (fatalTransport reports false) is retried
+// after queryRetryDelay; a fatal one (closed port, cancelled context, short
+// write) is returned immediately. mu is held by query for the whole call.
+func (c *Controller) queryWithRetries(ctx context.Context, perAttempt time.Duration, attempt func(context.Context) (*FeedbackData, error)) (*FeedbackData, error) {
+	var lastErr error
+	for i := 0; i < queryAttempts; i++ {
+		// The CALLER's context, never the per-attempt one: this is what
+		// separates "the operation was cancelled" from "this frame timed out".
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		var fb FeedbackData
-		if err := json.Unmarshal(body, &fb); err != nil || !feedbackResponseTs[fb.T] {
-			return nil, fmt.Errorf("HTTP transport did not return a feedback frame (T=%d, body %q); this firmware may not support feedback over HTTP", fb.T, string(body))
+		if i > 0 {
+			c.health.Retries++
+			c.logger.Debugf("retrying the feedback request (attempt %d of %d) after: %v", i+1, queryAttempts, lastErr)
+			if err := SleepCtx(ctx, queryRetryDelay); err != nil {
+				return nil, err
+			}
 		}
-		return &fb, nil
+		budget := c.attemptBudget(ctx, perAttempt)
+		if budget <= 0 {
+			break // not enough of the caller's deadline left to try again
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, budget)
+		fb, err := attempt(attemptCtx)
+		cancel()
+		if err == nil {
+			c.health.Frames++
+			return fb, nil
+		}
+		lastErr = err
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		if fatalTransport(err) {
+			c.health.TransportErrors++
+			c.noteError(err)
+			return nil, err
+		}
 	}
+	c.health.RetriesExhausted++
+	c.noteError(lastErr)
+	c.logger.Warnf("the feedback request failed %d times: %v", queryAttempts, lastErr)
+	return nil, fmt.Errorf("feedback request failed after %d attempts: %w", queryAttempts, lastErr)
+}
+
+// attemptBudget is how long one attempt may take: the frame timeout, or
+// whatever is left of the caller's deadline if that is shorter. The settle
+// sets a per-poll deadline, which is what keeps a 300 ms settle from spending
+// three frame timeouts inside one read.
+func (c *Controller) attemptBudget(ctx context.Context, perAttempt time.Duration) time.Duration {
+	budget := perAttempt
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); left < budget {
+			budget = left
+		}
+	}
+	return budget
+}
+
+// queryOnce writes FEEDBACK_GET and reads the reply: one attempt.
+func (c *Controller) queryOnce(ctx context.Context, cmdBytes []byte) (*FeedbackData, error) {
 	if err := c.serialWrite(cmdBytes); err != nil {
 		return nil, err
 	}
 	return c.serialReadFeedback(ctx)
+}
+
+// queryOnceHTTP performs the /js feedback request and validates the reply:
+// one attempt.
+func (c *Controller) queryOnceHTTP(ctx context.Context, cmdBytes []byte) (*FeedbackData, error) {
+	body, err := c.httpGet(ctx, cmdBytes)
+	if err != nil {
+		return nil, err
+	}
+	var fb FeedbackData
+	if err := json.Unmarshal(body, &fb); err != nil || !feedbackResponseTs[fb.T] {
+		return nil, fmt.Errorf("HTTP transport did not return a feedback frame (T=%d, body %q); this firmware may not support feedback over HTTP", fb.T, string(body))
+	}
+	return &fb, nil
 }
 
 // httpGet performs the /js?json= request and returns the raw body.
@@ -384,12 +504,24 @@ func (c *Controller) serialWrite(cmdBytes []byte) error {
 
 // serialReadFeedback reads until a T:1051 feedback frame arrives, dropping
 // stale or echoed frames, or until the read times out or ctx is cancelled.
+// It no longer retries a read error itself (audit 2.8): the port's read
+// timeout (serialChunkTimeout) is short, so the n==0 "nothing yet" branch
+// paces itself without a sleep, and a real read error is handed straight to
+// queryWithRetries, which is the one place that now decides whether an
+// attempt is worth repeating.
 func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, error) {
 	// Read response with proper frame detection (based on Python ReadLine class)
 	buffer := make([]byte, 256)
 	responseBuffer := bytes.Buffer{}
 	maxFrameLength := 512
 	startTime := time.Now()
+	// totalBudget is this attempt's frame timeout: whatever is left of the
+	// caller's deadline (attemptCtx, set by queryWithRetries), falling back
+	// to serialTimeout when ctx carries none (e.g. called directly in tests).
+	totalBudget := c.serialTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		totalBudget = time.Until(dl)
+	}
 
 	for {
 		// Honor caller cancellation (e.g. Reconfigure/Close, RPC deadline).
@@ -400,25 +532,22 @@ func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, err
 		}
 
 		// Check for timeout
-		if time.Since(startTime) > c.serialTimeout {
+		if time.Since(startTime) > totalBudget {
 			return nil, fmt.Errorf("timeout waiting for serial response")
 		}
 
 		// Read available data
 		n, err := c.serialPort.Read(buffer)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, fmt.Errorf("serial port closed or unplugged: %w", err)
-			}
-			if time.Since(startTime) > c.serialTimeout {
-				return nil, fmt.Errorf("timeout reading from serial port: %w", err)
-			}
-			c.logger.Warnf("serial read error (will retry): %v", err)
-			time.Sleep(10 * time.Millisecond)
-			continue
+			// A read timeout arrives as (0, nil), not an error; go.bug.st/serial
+			// never returns io.EOF. Anything reaching here is a real transport
+			// fault (e.g. an unplugged port), so hand it straight back rather
+			// than retrying in a loop that would spin at full speed.
+			return nil, fmt.Errorf("serial read: %w", err)
 		}
 		if n == 0 {
-			time.Sleep(1 * time.Millisecond)
+			// serialChunkTimeout (the port's read timeout) already paces this
+			// branch; a sleep here would just add latency on top of it.
 			continue
 		}
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -529,6 +530,83 @@ func TestSendSerialCommand_ContextCancelled(t *testing.T) {
 	}
 }
 
+// Audit 2.5: one dropped frame must not fail an operation.
+func TestQueryRetriesAndSucceeds(t *testing.T) {
+	// The first two attempts see an empty port (a frame timeout); the third
+	// gets a good frame. ResetInputBuffer pops the next scripted response.
+	port := &fakeSerialPort{frames: [][]byte{nil, nil, []byte(`{"T":1051,"b":0.4,"s":0,"e":0,"t":0,"r":0,"g":3.0}` + "\r\n")}}
+	c := newSerialTestController(t, port)
+	c.serialTimeout = 60 * time.Millisecond // keep the test quick
+	fb, err := c.GetFeedback(context.Background())
+	if err != nil || fb.B != 0.4 {
+		t.Fatalf("expected the third attempt to succeed: %v %v", fb, err)
+	}
+	if got := c.Health().Retries; got != 2 {
+		t.Fatalf("counted %d retries, want 2", got)
+	}
+}
+
+func TestQueryExhaustsRetries(t *testing.T) {
+	c := newSerialTestController(t, &fakeSerialPort{})
+	c.serialTimeout = 30 * time.Millisecond
+	if _, err := c.GetFeedback(context.Background()); err == nil {
+		t.Fatal("expected an error after the attempts are exhausted")
+	}
+	h := c.Health()
+	if h.RetriesExhausted != 1 || h.Retries != queryAttempts-1 {
+		t.Fatalf("health after exhaustion: %+v", h)
+	}
+}
+
+// errClosedPort stands in for the *serial.PortError the library returns from a
+// read on an unplugged port. serial.PortError's code field is unexported, so
+// the real one cannot be constructed with the code we need; the classifier
+// matches the Code() method, which is all either type has in common.
+type errClosedPort struct{}
+
+func (errClosedPort) Error() string              { return "port has been closed" }
+func (errClosedPort) Code() serial.PortErrorCode { return serial.PortClosed }
+
+// A closed or unplugged port is not retried: go.bug.st/serial reports it as a
+// PortError with code PortClosed, and retrying cannot help.
+func TestQueryDoesNotRetryAClosedPort(t *testing.T) {
+	c := newSerialTestController(t, &fakeSerialPort{readErr: errClosedPort{}})
+	before := c.Health().Retries
+	if _, err := c.GetFeedback(context.Background()); err == nil {
+		t.Fatal("expected an error")
+	}
+	if c.Health().Retries != before {
+		t.Fatal("a closed port must not be retried")
+	}
+}
+
+func TestQueryDoesNotRetryACancelledContext(t *testing.T) {
+	c := newSerialTestController(t, &fakeSerialPort{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.GetFeedback(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if c.Health().Retries != 0 {
+		t.Fatal("a cancelled context must not be retried")
+	}
+}
+
+// An attempt is not started when the caller's deadline cannot accommodate it.
+func TestQueryRespectsTheCallerDeadline(t *testing.T) {
+	c := newSerialTestController(t, &fakeSerialPort{})
+	c.serialTimeout = time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := c.GetFeedback(ctx); err == nil {
+		t.Fatal("expected an error")
+	}
+	if el := time.Since(start); el > 250*time.Millisecond {
+		t.Fatalf("query overran the caller's deadline: %v", el)
+	}
+}
+
 func TestSendSerialCommand_FiltersUnexpectedT(t *testing.T) {
 	// Send a stale 999 frame first, then the expected 1051. The filter
 	// should drop 999 and then accept 1051 on a subsequent read.
@@ -765,5 +843,50 @@ func TestResetInputBufferFailureEscalates(t *testing.T) {
 	}
 	if el := time.Since(start); el > c.serialTimeout/2 {
 		t.Fatalf("the escalation should short-circuit before any read is attempted, took %v", el)
+	}
+}
+
+// A per-attempt deadline expiring is an ordinary frame timeout, not a fault
+// worth giving up on: queryWithRetries gives every attempt its own context, so
+// whether a timed-out read surfaces as the read loop's own error or as
+// context.DeadlineExceeded depends on which of two timers fires first.
+// Classifying context errors as fatal would let the first slow read kill every
+// remaining attempt, silently disabling retries wherever that race lands the
+// other way. The caller's own cancellation is handled by checking the caller's
+// ctx.Err() around each attempt instead, which TestQueryDoesNotRetryACancelled
+// Context covers.
+func TestContextErrorsAreNotFatalTransport(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		context.Canceled,
+		fmt.Errorf("serial read: %w", context.DeadlineExceeded),
+	} {
+		if fatalTransport(err) {
+			t.Fatalf("%v must stay retryable: it is what a per-attempt deadline looks like", err)
+		}
+	}
+}
+
+// The deterministic form of the race documented on fatalTransport: an attempt
+// that fails with its own per-attempt deadline must still be retried. Whether
+// a timed-out read reports the read loop's own error or context.DeadlineExceeded
+// depends on Go's timer-goroutine latency, so the retry loop's behavior must
+// not depend on which one it gets.
+func TestQueryRetriesAPerAttemptDeadline(t *testing.T) {
+	c := newSerialTestController(t, &fakeSerialPort{})
+	calls := 0
+	_, err := c.queryWithRetries(context.Background(), 20*time.Millisecond,
+		func(context.Context) (*FeedbackData, error) {
+			calls++
+			return nil, fmt.Errorf("serial read: %w", context.DeadlineExceeded)
+		})
+	if err == nil {
+		t.Fatal("expected the attempts to be exhausted")
+	}
+	if calls != queryAttempts {
+		t.Fatalf("made %d attempts, want all %d: one attempt's deadline must not end the loop", calls, queryAttempts)
+	}
+	if got := c.Health().Retries; got != queryAttempts-1 {
+		t.Fatalf("Retries = %d, want %d", got, queryAttempts-1)
 	}
 }
