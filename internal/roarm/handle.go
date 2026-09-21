@@ -18,6 +18,7 @@ type Handle interface {
 	GetFeedback(ctx context.Context) (*FeedbackData, error)
 	WaitUntilSettled(ctx context.Context, req SettleRequest) (SettleResult, error)
 	Health() HealthSnapshot
+	ResetHealth()
 	IsMoving(ctx context.Context) (bool, error)
 	Close(ctx context.Context) error
 }

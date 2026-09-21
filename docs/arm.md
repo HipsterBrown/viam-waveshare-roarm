@@ -160,6 +160,16 @@ Retrieve comprehensive arm status including positions, torques, and Cartesian co
 >   --method DoCommand --data '{"command":{"command":"get_feedback"}}'
 > ```
 
+#### Checking the link
+
+```json
+{
+    "command": "comms_health"
+}
+```
+
+Returns the cumulative counters described in `internal/roarm/health.go`: `retry_pct` climbing means a lossy cable; `never_moved` means the arm is torqued off, obstructed, or at a limit; `stale_frames` above zero means the module is reading unsolicited firmware traffic. A retry rate over 5% across at least 100 reads also logs a rate-limited warning naming this command. Add `"reset": true` to zero the counters for a clean bench measurement; the response still reports the pre-reset values.
+
 #### Gripper RPC bridge (internal)
 
 The following commands exist to let the companion gripper component

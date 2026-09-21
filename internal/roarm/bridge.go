@@ -17,6 +17,12 @@ const (
 	CmdSetGripperRad = "set_gripper_rad"
 	CmdStopGripper   = "stop_gripper"
 
+	// CmdCommsHealth is not part of the gripper bridge; it lives here beside
+	// the other DoCommand names because this is where they're kept. It
+	// reports the link health counters (see health.go) and, with
+	// {"reset": true}, zeroes them for a clean bench measurement.
+	CmdCommsHealth = "comms_health"
+
 	KeyRad   = "rad"
 	KeySpeed = "speed" // deg/s
 	KeyAcc   = "acc"   // deg/s^2

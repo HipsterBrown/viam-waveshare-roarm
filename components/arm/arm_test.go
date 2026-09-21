@@ -292,6 +292,56 @@ func TestDoCommand_GetMotionParams(t *testing.T) {
 	}
 }
 
+func TestDoCommand_CommsHealth(t *testing.T) {
+	fc := &testfake.FakeController{}
+	fc.HealthSnap = roarm.HealthSnapshot{Frames: 200, Retries: 20, StaleFrames: 3}
+	r := newTestArm(t, fc)
+	out, err := r.DoCommand(context.Background(), map[string]interface{}{"command": roarm.CmdCommsHealth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["frames"] != 200 {
+		t.Fatalf("expected frames=200, got %v", out["frames"])
+	}
+	if out["retry_pct"] != 10.0 {
+		t.Fatalf("expected retry_pct=10, got %v", out["retry_pct"])
+	}
+	if out["stale_frames"] != 3 {
+		t.Fatalf("expected stale_frames=3, got %v", out["stale_frames"])
+	}
+	if _, ok := out["reset"]; ok {
+		t.Fatal("did not ask for a reset; \"reset\" should be absent")
+	}
+	// The counters must be untouched: a plain read must not reset them.
+	if fc.HealthSnap.Frames != 200 {
+		t.Fatalf("a plain read reset the counters: %+v", fc.HealthSnap)
+	}
+}
+
+func TestDoCommand_CommsHealthReset(t *testing.T) {
+	fc := &testfake.FakeController{}
+	fc.HealthSnap = roarm.HealthSnapshot{Frames: 200, Retries: 20}
+	r := newTestArm(t, fc)
+	out, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command": roarm.CmdCommsHealth,
+		"reset":   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["reset"] != true {
+		t.Fatalf("expected reset=true in the response, got %v", out)
+	}
+	// The reported snapshot is the pre-reset one (what the caller asked
+	// about); the counters underneath are zeroed for the next measurement.
+	if out["frames"] != 200 {
+		t.Fatalf("expected the response to report the pre-reset frames=200, got %v", out["frames"])
+	}
+	if fc.HealthSnap.Frames != 0 {
+		t.Fatalf("expected the counters to be zeroed after reset, got %+v", fc.HealthSnap)
+	}
+}
+
 func TestDoCommand_UnknownCommand(t *testing.T) {
 	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)

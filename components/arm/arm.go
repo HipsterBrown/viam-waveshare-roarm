@@ -494,6 +494,15 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 			},
 		}, nil
 
+	case roarm.CmdCommsHealth:
+		ctrl := r.snapshotController()
+		out := ctrl.Health().Map()
+		if reset, ok := cmd["reset"].(bool); ok && reset {
+			ctrl.ResetHealth()
+			out["reset"] = true
+		}
+		return out, nil
+
 	case "set_speed":
 		speed, ok := cmd["value"].(float64)
 		if !ok {

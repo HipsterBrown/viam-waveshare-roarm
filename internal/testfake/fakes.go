@@ -27,10 +27,11 @@ type FakeController struct {
 	Moving            bool   // what IsMoving reports
 	HoldStill         bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
 	SettleCalls       int
-	LastSettleRequest roarm.SettleRequest // request passed to the most recent WaitUntilSettled
-	SettleOutcome     roarm.SettleOutcome // outcome WaitUntilSettled reports; zero value is SettleArrived
-	WriteCount        int                 // SetJointRadian(s) calls
-	Closed            bool                // set by Close
+	LastSettleRequest roarm.SettleRequest  // request passed to the most recent WaitUntilSettled
+	SettleOutcome     roarm.SettleOutcome  // outcome WaitUntilSettled reports; zero value is SettleArrived
+	WriteCount        int                  // SetJointRadian(s) calls
+	Closed            bool                 // set by Close
+	HealthSnap        roarm.HealthSnapshot // what Health reports; ResetHealth zeroes it
 }
 
 func (f *FakeController) err(method string) error {
@@ -163,7 +164,15 @@ func (f *FakeController) WaitUntilSettled(ctx context.Context, req roarm.SettleR
 }
 
 func (f *FakeController) Health() roarm.HealthSnapshot {
-	return roarm.HealthSnapshot{}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.HealthSnap
+}
+
+func (f *FakeController) ResetHealth() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.HealthSnap = roarm.HealthSnapshot{}
 }
 
 func (f *FakeController) IsMoving(ctx context.Context) (bool, error) {

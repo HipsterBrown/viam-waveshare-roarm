@@ -54,6 +54,11 @@ const (
 // caller has given up, or the command could not be put on the wire.
 // go.bug.st/serial never returns io.EOF (a read timeout is (0, nil)); an
 // unplug is a PortError whose Code is PortClosed.
+// ErrCannotFlushInput reports that the serial input buffer can no longer be
+// flushed, so a fresh frame cannot be told from a stale one. Exported so a
+// caller can distinguish it from an ordinary read failure.
+var ErrCannotFlushInput = errors.New("cannot flush the serial input buffer")
+
 func fatalTransport(err error) bool {
 	if err == nil {
 		return false
@@ -67,6 +72,12 @@ func fatalTransport(err error) bool {
 	// where the race lands the other way. The caller's own cancellation is
 	// handled structurally instead: queryWithRetries checks the CALLER's
 	// ctx.Err() around each attempt.
+	// A flush that has already failed twice in a row will not succeed on a
+	// retry milliseconds later, and each attempt re-flushes, so retrying only
+	// multiplies the failures before reporting the same thing.
+	if errors.Is(err, ErrCannotFlushInput) {
+		return true
+	}
 	var pe interface{ Code() serial.PortErrorCode }
 	if errors.As(err, &pe) && pe.Code() == serial.PortClosed {
 		return true
@@ -244,7 +255,12 @@ func (c *Controller) Close(ctx context.Context) error {
 // Returns the parsed feedback, the raw JSON slice (for debug logging),
 // and ok=true when a clean frame was found. ok=false means no complete,
 // parseable frame exists yet — the caller should keep reading.
-func extractLastValidFeedback(buf []byte) (*FeedbackData, []byte, bool) {
+//
+// A Controller receiver so every rejected candidate can be counted: a corrupt
+// or incomplete frame counts as InvalidFrames, a well-formed frame of the
+// wrong T counts as StaleFrames (audit 2.8 — traffic the module never asked
+// for). The one production caller, serialReadFeedback, already holds c.mu.
+func (c *Controller) extractLastValidFeedback(buf []byte) (*FeedbackData, []byte, bool) {
 	frameEnd := []byte("}\r\n")
 	frameStart := []byte("{")
 	windowEnd := len(buf)
@@ -260,8 +276,12 @@ func extractLastValidFeedback(buf []byte) (*FeedbackData, []byte, bool) {
 			continue
 		}
 		candidate := buf[startIdx : endIdx+1]
-		if fb, ok, _ := parseFeedbackFrame(candidate); ok {
+		if fb, ok, wrongT := parseFeedbackFrame(candidate); ok {
 			return fb, candidate, true
+		} else if wrongT {
+			c.health.StaleFrames++
+		} else {
+			c.health.InvalidFrames++
 		}
 		// The candidate is corrupt, incomplete, or a frame the module did not
 		// ask for; narrow the search to content strictly before its `{` so the
@@ -485,11 +505,13 @@ func (c *Controller) serialWrite(cmdBytes []byte) error {
 	}
 	if err := c.serialPort.ResetInputBuffer(); err != nil {
 		c.resetFailures++
+		c.health.ResetFailures++
 		// One failure is a warning; a second in a row means the module can no
 		// longer tell a fresh frame from a stale one, which is the premise the
 		// whole read path rests on (audit 2.7).
 		if c.resetFailures >= 2 {
-			return fmt.Errorf("cannot flush the serial input buffer (%d consecutive failures), so fresh and stale frames are indistinguishable: %w", c.resetFailures, err)
+			return fmt.Errorf("%w (%d consecutive failures), so fresh and stale frames are indistinguishable: %w",
+				ErrCannotFlushInput, c.resetFailures, err)
 		}
 		c.logger.Warnf("ResetInputBuffer failed, continuing once: %v", err)
 	} else {
@@ -500,7 +522,10 @@ func (c *Controller) serialWrite(cmdBytes []byte) error {
 		return fmt.Errorf("failed to write to serial port: %w", err)
 	}
 	if n != len(cmdBytes) {
-		return fmt.Errorf("short write to serial port: %d of %d bytes; the firmware will discard the truncated command", n, len(cmdBytes))
+		err := fmt.Errorf("short write to serial port: %d of %d bytes; the firmware will discard the truncated command", n, len(cmdBytes))
+		c.health.ShortWrites++
+		c.noteError(err)
+		return err
 	}
 	return nil
 }
@@ -530,12 +555,14 @@ func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, err
 		// Honor caller cancellation (e.g. Reconfigure/Close, RPC deadline).
 		select {
 		case <-ctx.Done():
+			c.health.ReadTimeouts++
 			return nil, ctx.Err()
 		default:
 		}
 
 		// Check for timeout
 		if time.Since(startTime) > totalBudget {
+			c.health.ReadTimeouts++
 			return nil, fmt.Errorf("timeout waiting for serial response")
 		}
 
@@ -575,7 +602,7 @@ func (c *Controller) serialReadFeedback(ctx context.Context) (*FeedbackData, err
 		// emits a torn blob (two partial frames merged without a
 		// `}\r\n{` boundary) extractLastValidFeedback walks earlier
 		// `}\r\n` terminators, so we only surface clean frames.
-		feedback, jsonData, ok := extractLastValidFeedback(responseBuffer.Bytes())
+		feedback, jsonData, ok := c.extractLastValidFeedback(responseBuffer.Bytes())
 		if !ok {
 			if c.verboseWire {
 				c.logger.Debugf("no complete, valid feedback frame yet in: %s", responseBuffer.String())
@@ -749,6 +776,10 @@ func (c *Controller) SetJointRadians(ctx context.Context, radians []float64, spe
 // GetJointRadians returns the current joint positions in radians
 func (c *Controller) GetJointRadians(ctx context.Context) ([]float64, error) {
 	feedback, err := c.query(ctx)
+	// query holds c.mu for its whole body under a defer; checkLinkHealth takes
+	// the same mutex, so it must run only after query has returned and
+	// released it — never from inside query.
+	c.checkLinkHealth()
 	if err != nil {
 		return nil, err
 	}
@@ -767,7 +798,10 @@ func (c *Controller) GetJointRadians(ctx context.Context) ([]float64, error) {
 
 // GetFeedback returns the full feedback data from the arm
 func (c *Controller) GetFeedback(ctx context.Context) (*FeedbackData, error) {
-	return c.query(ctx)
+	feedback, err := c.query(ctx)
+	// See the comment in GetJointRadians: this must run after query returns.
+	c.checkLinkHealth()
+	return feedback, err
 }
 
 // ValidateLEDBrightness validates LED brightness parameter (0-255)
