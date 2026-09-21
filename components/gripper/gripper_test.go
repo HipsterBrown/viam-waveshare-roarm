@@ -400,3 +400,30 @@ func TestGripperValidateCollisionGeometry(t *testing.T) {
 		t.Fatalf("expected the config path in the error, got: %v", err)
 	}
 }
+
+// Grab closes onto an object, so the jaw stopping before the closed limit is
+// the expected outcome, not a fault. grabMarginRad (0.05) is wider than the
+// settle's 2*settleTolRad (0.04), so without the opt-out a successful grab
+// could be reported as an arm that never moved.
+func TestGrabOptsOutOfTheMotionRequirement(t *testing.T) {
+	fa := &testfake.FakeArmRPC{Joint6Rad: 0.3, HoldStill: true}
+	g := newTestGripper(t, fa)
+	if _, err := g.Grab(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if fa.LastRequireMotion {
+		t.Fatal("Grab must send require_motion=false")
+	}
+}
+
+// Open moves to a free limit, so an immobile jaw there is a real fault.
+func TestOpenRequiresMotion(t *testing.T) {
+	fa := &testfake.FakeArmRPC{Joint6Rad: 0.3}
+	g := newTestGripper(t, fa)
+	if err := g.Open(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !fa.LastRequireMotion {
+		t.Fatal("Open must send require_motion=true")
+	}
+}

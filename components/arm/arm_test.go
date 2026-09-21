@@ -751,3 +751,112 @@ func TestReconfigureSwitchesCollisionGeometry(t *testing.T) {
 		t.Fatal("a collision_geometry change must not reopen the connection")
 	}
 }
+
+// The settle must be told the profile the write used, or it derives its timing
+// from the wrong numbers: at 40 deg/s^2 a default-profile derivation is far
+// too short.
+func TestMoveToJointPositionsPassesTheProfileToTheSettle(t *testing.T) {
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{T: 1051, B: 0.1, G: 3.0}}
+	r := newTestArm(t, fc)
+	// newTestArm builds the struct directly, so the configured profile is set
+	// here rather than through an attribute map.
+	r.defaultSpeed, r.defaultAcc = roarm.SpeedToUnits(25), roarm.AccelToUnits(40)
+
+	if err := r.MoveToJointPositions(context.Background(),
+		[]referenceframe.Input{0.5, 0, 0, 0, 0}, nil); err != nil {
+		t.Fatal(err)
+	}
+	req := fc.LastSettleRequest
+	if req.SpeedUnits != roarm.SpeedToUnits(25) || req.AccUnits != roarm.AccelToUnits(40) {
+		t.Fatalf("settle got speed=%d acc=%d, want the configured profile", req.SpeedUnits, req.AccUnits)
+	}
+	if !req.RequireMotion {
+		t.Fatal("an arm move must require motion")
+	}
+	// Start must be the pose read from the arm, not the target: a commanded
+	// start pose makes a never-moved arm undetectable.
+	if len(req.Start) != 6 || math.Abs(req.Start[0]-0.1) > 1e-9 {
+		t.Fatalf("settle Start = %v, want the measured pose with 0.1 at joint 1", req.Start)
+	}
+}
+
+// The gripper bridge must settle against the pose read before the write, so a
+// jaw that never moved is detectable and the derived deadline matches the real
+// travel rather than the whole jaw range.
+func TestSetGripperRadSettlesAgainstTheMeasuredPose(t *testing.T) {
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{T: 1051, B: 0.1, G: 0.5}}
+	r := newTestArm(t, fc)
+	if _, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command":    roarm.CmdSetGripperRad,
+		roarm.KeyRad: 1.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := fc.LastSettleRequest
+	if len(req.Start) != 6 || math.Abs(req.Start[5]-0.5) > 1e-9 || math.Abs(req.Start[0]-0.1) > 1e-9 {
+		t.Fatalf("settle Start = %v, want the measured pose (jaw 0.5, joint 1 0.1)", req.Start)
+	}
+	if len(req.Target) != 6 || math.Abs(req.Target[5]-1.5) > 1e-9 || math.Abs(req.Target[0]-0.1) > 1e-9 {
+		t.Fatalf("settle Target = %v, want the measured pose with the jaw at 1.5", req.Target)
+	}
+	if !req.RequireMotion {
+		t.Fatal("set_gripper_rad must require motion unless require_motion says otherwise")
+	}
+	if req.Timeout != 0 {
+		t.Fatalf("settle Timeout = %v, want the derived deadline", req.Timeout)
+	}
+}
+
+func TestSetGripperRadHonorsRequireMotionFalse(t *testing.T) {
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{T: 1051, G: 0.5}}
+	r := newTestArm(t, fc)
+	if _, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command":              roarm.CmdSetGripperRad,
+		roarm.KeyRad:           1.5,
+		roarm.KeyRequireMotion: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fc.LastSettleRequest.RequireMotion {
+		t.Fatal("require_motion=false must reach the settle")
+	}
+}
+
+// The gripper recognises "this transport cannot read positions" by a marker
+// substring, so the new pre-write read has to keep the marker in its error.
+func TestSetGripperRadKeepsTheNoFeedbackMarker(t *testing.T) {
+	fc := &testfake.FakeController{FailOn: "GetJointRadians", FailWith: roarm.ErrNoFeedback}
+	r := newTestArm(t, fc)
+	_, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command":    roarm.CmdSetGripperRad,
+		roarm.KeyRad: 1.5,
+	})
+	if err == nil {
+		t.Fatal("expected the read to fail")
+	}
+	if !errors.Is(err, roarm.ErrNoFeedback) || !strings.Contains(err.Error(), roarm.NoFeedbackMarker) {
+		t.Fatalf("error must carry the no-feedback marker, got: %v", err)
+	}
+}
+
+// A fire-and-forget gripper command must still work on a transport that
+// cannot read positions. The settle's start pose is only needed when there is
+// a settle, so the pre-move read is skipped entirely when wait is false.
+func TestBridgeSetGripperRad_NoWaitNeedsNoFeedback(t *testing.T) {
+	fc := &testfake.FakeController{FailOn: "GetJointRadians", FailWith: roarm.ErrNoFeedback}
+	r := newTestArm(t, fc)
+	out, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command":     roarm.CmdSetGripperRad,
+		roarm.KeyRad:  1.5,
+		roarm.KeyWait: false,
+	})
+	if err != nil {
+		t.Fatalf("wait=false must not need a position read: %v", err)
+	}
+	if out["success"] != true {
+		t.Fatalf("expected success, got %v", out)
+	}
+	if fc.SettleCalls != 0 {
+		t.Fatalf("wait=false must not settle, got %d settle calls", fc.SettleCalls)
+	}
+}

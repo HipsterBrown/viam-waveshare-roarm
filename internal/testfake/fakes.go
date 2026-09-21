@@ -184,18 +184,22 @@ func (f *FakeController) Close(ctx context.Context) error {
 // (a blocked jaw). Joint6Series, when non-empty, is returned one value per
 // get before falling back to Joint6Rad, so IsMoving's two reads can differ.
 type FakeArmRPC struct {
-	mu             sync.Mutex
-	Joint6Rad      float64
-	Joint6Series   []float64
-	HoldStill      bool
-	ArmMoving      bool
-	LastCommand    string
-	LastSetRad     float64
-	LastSetSpeed   float64
-	LastSetAcc     float64
-	LastWait       bool
-	StopCalls      int
-	DoCommandError error
+	mu           sync.Mutex
+	Joint6Rad    float64
+	Joint6Series []float64
+	HoldStill    bool
+	ArmMoving    bool
+	LastCommand  string
+	LastSetRad   float64
+	LastSetSpeed float64
+	LastSetAcc   float64
+	LastWait     bool
+	// LastRequireMotion defaults to true when the key is absent, mirroring the
+	// bridge's own default: a fake defaulting to false would let a caller that
+	// forgot the key pass a "Grab opts out" test.
+	LastRequireMotion bool
+	StopCalls         int
+	DoCommandError    error
 }
 
 func (f *FakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
@@ -222,6 +226,10 @@ func (f *FakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) 
 		f.LastWait = true
 		if w, ok := cmd[roarm.KeyWait].(bool); ok {
 			f.LastWait = w
+		}
+		f.LastRequireMotion = true
+		if m, ok := cmd[roarm.KeyRequireMotion].(bool); ok {
+			f.LastRequireMotion = m
 		}
 		if !f.HoldStill {
 			f.Joint6Rad = rad

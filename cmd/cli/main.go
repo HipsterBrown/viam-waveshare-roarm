@@ -108,24 +108,26 @@ func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, 
 	mask[joint-1] = true
 
 	park := func(target float64) []float64 {
-		if err := ctrl.SetJointRadian(ctx, joint, target, speed, acc); err != nil {
-			log.Fatal(err)
-		}
-		t := make([]float64, 6)
-		t[joint-1] = target
-		req := roarm.SettleRequest{
-			Start:         t,
-			Target:        t,
-			Mask:          mask,
-			SpeedUnits:    speed,
-			AccUnits:      acc,
-			RequireMotion: true,
-			Timeout:       15 * time.Second,
-		}
-		res, err := ctrl.WaitUntilSettled(ctx, req)
+		// Read before the write: Start must be a measured pose, and building
+		// the target from it keeps the other five joints where they are
+		// (a zero-filled target commanded them all to 0).
+		start, err := ctrl.GetJointRadians(ctx)
 		if err != nil {
 			log.Fatal(err)
 		}
+		if err := ctrl.SetJointRadian(ctx, joint, target, speed, acc); err != nil {
+			log.Fatal(err)
+		}
+		t := append([]float64(nil), start...)
+		t[joint-1] = target
+		res, err := ctrl.WaitUntilSettled(ctx, roarm.SettleRequest{
+			Target: t, Start: start, Mask: mask, SpeedUnits: speed, AccUnits: acc, RequireMotion: true,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("  settle: %v in %v (%d polls, %d retries, slowest read %v)\n",
+			res.Outcome, res.Elapsed.Round(time.Millisecond), res.Polls, res.Retries, res.SlowestRead.Round(time.Millisecond))
 		return res.Positions
 	}
 	park(from)

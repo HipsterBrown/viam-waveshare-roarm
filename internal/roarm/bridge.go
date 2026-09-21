@@ -22,6 +22,13 @@ const (
 	KeyAcc   = "acc"   // deg/s^2
 	KeyWait  = "wait"  // bool, default true: block until joint 6 settles
 
+	// KeyRequireMotion is a bool, default true: whether the arm's settle should
+	// treat "joint 6 never left where it started" as an error. Grab sends false
+	// because closing onto an object legitimately stops the jaw early, and the
+	// gripper's grab margin (0.05 rad) is wider than the settle's arrival
+	// tolerance, so a successful grab would otherwise look like a failure.
+	KeyRequireMotion = "require_motion"
+
 	// NoFeedbackMarker is the substring the gripper looks for in a bridge
 	// error to recognise "this transport cannot read positions" after the
 	// error has crossed gRPC as plain text. ErrNoFeedback embeds it.

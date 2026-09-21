@@ -323,8 +323,8 @@ func (r *roarmM3) moveAndSettle(ctx context.Context, ctrl roarm.Handle, current,
 		return fmt.Errorf("failed to move arm: %w", err)
 	}
 	req := roarm.SettleRequest{
-		Start:         current,
 		Target:        target,
+		Start:         current,
 		Mask:          roarm.ArmMask,
 		SpeedUnits:    speed,
 		AccUnits:      acc,
@@ -556,20 +556,38 @@ func (r *roarmM3) DoCommand(ctx context.Context, cmd map[string]interface{}) (ma
 		if w, ok := cmd[roarm.KeyWait].(bool); ok {
 			wait = w
 		}
+		requireMotion := true
+		if v, ok := cmd[roarm.KeyRequireMotion].(bool); ok {
+			requireMotion = v
+		}
 		ctrl := r.snapshotController()
+		// Read before the write, but only when there is a settle to feed: the
+		// settle needs a measured start pose to detect a jaw that never moved,
+		// and the real travel is what makes its derived deadline mean
+		// anything. Reading unconditionally would cost a frame the
+		// fire-and-forget caller never asked for, and would turn wait=false
+		// into an error on a transport that cannot read positions at all.
+		var before []float64
+		if wait {
+			var err error
+			before, err = readAllJointRadians(ctx, ctrl)
+			if err != nil {
+				return nil, fmt.Errorf("%s: read position before the move: %w", roarm.CmdSetGripperRad, err)
+			}
+		}
 		if err := ctrl.SetJointRadian(ctx, 6, rad, speed, acc); err != nil {
 			return nil, err
 		}
 		if wait {
-			target := make([]float64, 6)
+			target := append([]float64(nil), before...)
 			target[5] = rad
 			req := roarm.SettleRequest{
-				Start:         target,
 				Target:        target,
+				Start:         before,
 				Mask:          roarm.GripperMask,
 				SpeedUnits:    speed,
 				AccUnits:      acc,
-				RequireMotion: true,
+				RequireMotion: requireMotion,
 			}
 			if _, err := ctrl.WaitUntilSettled(ctx, req); err != nil {
 				return nil, fmt.Errorf("%s: gripper did not settle: %w", roarm.CmdSetGripperRad, err)

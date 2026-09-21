@@ -141,15 +141,18 @@ func (g *roarmM3Gripper) Status(ctx context.Context) (map[string]interface{}, er
 // setGripperRad commands joint 6 to a software-frame radian via the arm's
 // DoCommand bridge. See internal/roarm/bridge.go for the protocol.
 // The arm side settles on joint 6 before returning, so no sleep follows.
-func (g *roarmM3Gripper) setGripperRad(ctx context.Context, rad, speedDegs, accDegs float64) error {
+// requireMotion is false only for Grab, where the jaw legitimately stops
+// short of its target on an object.
+func (g *roarmM3Gripper) setGripperRad(ctx context.Context, rad, speedDegs, accDegs float64, requireMotion bool) error {
 	g.opInFlight.Store(true)
 	defer g.opInFlight.Store(false)
 	_, err := g.armClient.DoCommand(ctx, map[string]interface{}{
-		"command":      roarm.CmdSetGripperRad,
-		roarm.KeyRad:   rad,
-		roarm.KeySpeed: speedDegs,
-		roarm.KeyAcc:   accDegs,
-		roarm.KeyWait:  true,
+		"command":              roarm.CmdSetGripperRad,
+		roarm.KeyRad:           rad,
+		roarm.KeySpeed:         speedDegs,
+		roarm.KeyAcc:           accDegs,
+		roarm.KeyWait:          true,
+		roarm.KeyRequireMotion: requireMotion,
 	})
 	return err
 }
@@ -181,7 +184,7 @@ func (g *roarmM3Gripper) Open(ctx context.Context, extra map[string]interface{})
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	if err := g.setGripperRad(ctx, gripperOpenRad, roarm.DefaultGripperSpeedDegsPerSec, roarm.DefaultGripperAccDegsPerSecSq); err != nil {
+	if err := g.setGripperRad(ctx, gripperOpenRad, roarm.DefaultGripperSpeedDegsPerSec, roarm.DefaultGripperAccDegsPerSecSq, true); err != nil {
 		return fmt.Errorf("failed to open gripper: %w", err)
 	}
 	g.holding.Store(false)
@@ -201,7 +204,7 @@ func (g *roarmM3Gripper) Grab(ctx context.Context, extra map[string]interface{})
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	if err := g.setGripperRad(ctx, gripperGrabRad, roarm.DefaultGripperSpeedDegsPerSec, roarm.DefaultGripperAccDegsPerSecSq); err != nil {
+	if err := g.setGripperRad(ctx, gripperGrabRad, roarm.DefaultGripperSpeedDegsPerSec, roarm.DefaultGripperAccDegsPerSecSq, false); err != nil {
 		return false, fmt.Errorf("failed to grab with gripper: %w", err)
 	}
 
@@ -306,7 +309,7 @@ func (g *roarmM3Gripper) SetPosition(ctx context.Context, angleDegrees, speedDeg
 	ctx, done := g.opMgr.New(ctx)
 	defer done()
 
-	if err := g.setGripperRad(ctx, radians, speedDegs, accDegs); err != nil {
+	if err := g.setGripperRad(ctx, radians, speedDegs, accDegs, true); err != nil {
 		return fmt.Errorf("failed to set gripper position: %w", err)
 	}
 	return nil
