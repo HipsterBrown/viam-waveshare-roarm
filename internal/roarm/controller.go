@@ -664,7 +664,7 @@ func (c *Controller) warnSettleTiming(res SettleResult) {
 		c.logger.Warnf("the settle used %v of its %v budget (%d polls); the arm is slower than its commanded profile implies, "+
 			"so speed_degs_per_sec or acceleration_degs_per_sec_per_sec may not match reality",
 			res.Elapsed.Round(time.Millisecond), res.Deadline.Round(time.Millisecond), res.Polls)
-	case res.SlowestRead > settlePollInterval:
+	case res.SlowestRead > time.Duration(slowReadWarnFactor*float64(settlePollInterval)):
 		c.logger.Warnf("the slowest position read in this settle took %v, longer than the %v poll interval; "+
 			"settle timing is dominated by read latency and the effective poll rate is below the configured one",
 			res.SlowestRead.Round(time.Millisecond), settlePollInterval)

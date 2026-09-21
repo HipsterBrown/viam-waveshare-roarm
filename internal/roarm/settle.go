@@ -16,10 +16,17 @@ import (
 // move at any acceleration below about 76 deg/s^2.
 const (
 	settlePollInterval = 50 * time.Millisecond
-	settleTolRad       = 0.02  // ~1.1 degrees: close enough to call it arrived
-	StallRad           = 0.005 // ~0.3 degrees: the motion floor over a window
-	minSettleTimeout   = 500 * time.Millisecond
-	maxStallWindow     = 2 * time.Second
+	// settleTolRad is how close counts as arrived. Measured on the bench, this
+	// arm's servos land 1.14 to 1.21 degrees short of any commanded position,
+	// in both directions, so it is a deadband rather than a calibration
+	// offset. 0.02 rad (1.146 deg) sat inside that band: the same physical
+	// outcome reported "arrived" at 0.0199 rad and "stopped short" at 0.0211,
+	// which meant roughly half of all healthy moves logged an obstruction
+	// warning. 0.03 rad (1.72 deg) clears the measured deadband with margin.
+	settleTolRad     = 0.03
+	StallRad         = 0.005 // ~0.3 degrees: the motion floor over a window
+	minSettleTimeout = 500 * time.Millisecond
+	maxStallWindow   = 2 * time.Second
 
 	// stallSpeedFraction is the share of the commanded speed a healthy arm is
 	// assumed to actually achieve when sizing the stall window. Pessimistic on
@@ -34,6 +41,13 @@ const (
 	// before it warns. With a ramp-aware deadline a healthy move sits near
 	// 0.5, so 0.75 means the arm is materially slower than commanded.
 	settleBudgetWarnFraction = 0.75
+
+	// slowReadWarnFactor scales settlePollInterval into the threshold above
+	// which a read is called slow. Not 1.0: a healthy serial frame on this
+	// arm costs a measured 48 to 50 ms, right on the poll interval, so a 1.0
+	// factor flapped in and out of warning on every single move. 1.5 fires
+	// when reads genuinely dominate the loop rather than merely match it.
+	slowReadWarnFactor = 1.5
 
 	// IsMovingProbeGap separates the two position samples IsMoving compares.
 	IsMovingProbeGap = 40 * time.Millisecond

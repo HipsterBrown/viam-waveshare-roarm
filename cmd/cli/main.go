@@ -180,6 +180,12 @@ func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, 
 	fmt.Printf("joint %d: %.1f deg in %v -> %.1f deg/s (commanded %.1f deg/s at %.0f deg/s^2; %d/%d units); final %.4f rad\n",
 		joint, travelDeg, elapsed.Round(time.Millisecond), travelDeg/elapsed.Seconds(),
 		degPerSec, degPerSecSq, speed, acc, pos[joint-1])
+	// Health counters live on the Controller, so they only mean anything
+	// within one process. This subcommand is the only one that does enough
+	// reads for the ratio to be worth printing.
+	h := ctrl.Health()
+	fmt.Printf("  link: %d frames, %d retries (%.1f%%), %d exhausted, %d invalid, %d stale, %d read timeouts\n",
+		h.Frames, h.Retries, h.RetryPct(), h.RetriesExhausted, h.InvalidFrames, h.StaleFrames, h.ReadTimeouts)
 }
 
 func atoi(s string) int {

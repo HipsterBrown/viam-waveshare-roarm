@@ -31,10 +31,12 @@ const (
 	KeyWait  = "wait"  // bool, default true: block until joint 6 settles
 
 	// KeyRequireMotion is a bool, default true: whether the arm's settle should
-	// treat "joint 6 never left where it started" as an error. Grab sends false
-	// because closing onto an object legitimately stops the jaw early, and the
-	// gripper's grab margin (0.05 rad) is wider than the settle's arrival
-	// tolerance, so a successful grab would otherwise look like a failure.
+	// treat "joint 6 never left where it started" as an error. Grab sends
+	// false because closing onto an object legitimately stops the jaw early,
+	// and a jaw that meets the object immediately has not moved at all. The
+	// settle's own tolerances would forgive most of those, but not one where
+	// the object sits at the open limit, and a successful grab must never be
+	// reported as a failure.
 	KeyRequireMotion = "require_motion"
 
 	// NoFeedbackMarker is the substring the gripper looks for in a bridge
