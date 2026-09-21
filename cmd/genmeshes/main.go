@@ -18,7 +18,7 @@ import (
 func main() {
 	ws := flag.String("roarm-ws", "", "path to a checkout of github.com/waveshareteam/roarm_ws (branch ros2-humble)")
 	out := flag.String("out", "internal/geometry", "output directory (the module's geometry package)")
-	collisionTriangles := flag.Int("collision-triangles", 200, "triangle budget per collision envelope (12 per slab)")
+	slabs := flag.Int("slabs", 6, "bounding-polytope slabs per arm-link collision envelope along its longest axis")
 	flag.Parse()
 	if *ws == "" {
 		flag.Usage()
@@ -61,11 +61,11 @@ func main() {
 		if err := os.WriteFile(filepath.Join(outMeshes, link+".glb"), glb, 0o644); err != nil {
 			log.Fatal(err)
 		}
-		boxesForLink := slabBoxes(centred, *collisionTriangles/12)
-		if n, gap := coverage(pos, boxesForLink, coverageTolMM); n > 0 {
+		pieces := slabHulls(centred, *slabs)
+		if n, gap := coverage(pos, pieces, coverageTolMM); n > 0 {
 			log.Fatalf("%s: collision envelope leaves %d of %d vertices outside it (worst %.1f mm)", link, n, len(pos), gap)
 		}
-		envelope := toMesh(boxesTris(boxesForLink), link)
+		envelope := toMesh(flatten(pieces), link)
 		// The collision PLY travels inline in roarm_m3_mesh.json; no standalone file.
 		ply := envelope.TrianglesToPLYBytes(false)
 		boxes[link] = linkGeometry{Center: c, Size: hi.Sub(lo)}
@@ -85,7 +85,7 @@ func main() {
 		fmt.Println("wrote", filepath.Join(*out, name))
 	}
 
-	if err := emitJaw(joints, world, meshDir, *out, *collisionTriangles); err != nil {
+	if err := emitJaw(joints, world, meshDir, *out, jawSlabs); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -93,6 +93,10 @@ func main() {
 // coverageTolMM is how far a source vertex may poke out of its collision
 // envelope before the generator refuses to ship it (PLY rounding is ~0.001 mm).
 const coverageTolMM = 0.5
+
+// jawSlabs is the jaw envelope's slab count; the jaw is 78 mm long, so fewer
+// slabs than an arm link keep its PLY small without coarsening it much.
+const jawSlabs = 4
 
 func readSTLFile(path string) ([][3]r3.Vector, error) {
 	raw, err := os.ReadFile(path)

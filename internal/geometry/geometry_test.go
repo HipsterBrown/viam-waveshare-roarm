@@ -322,10 +322,23 @@ func glbPositions(t *testing.T, glb []byte) []r3.Vector {
 	return out
 }
 
-// Every vertex of a link's visual mesh lies inside that link's collision
-// envelope. This is the guard against the hole rdk's hull decimator left in
-// link2 (a shaft with no vertices in its middle): the AABB test above cannot
-// see a missing middle, this can.
+// solidAngle is the signed solid angle subtended by triangle t at p
+// (Van Oosterom and Strackee, 1983).
+func solidAngle(t [3]r3.Vector, p r3.Vector) float64 {
+	a, b, c := t[0].Sub(p), t[1].Sub(p), t[2].Sub(p)
+	la, lb, lc := a.Norm(), b.Norm(), c.Norm()
+	num := a.Dot(b.Cross(c))
+	den := la*lb*lc + a.Dot(b)*lc + b.Dot(c)*la + c.Dot(a)*lb
+	return 2 * math.Atan2(num, den)
+}
+
+// Every vertex of a link's visual mesh lies strictly inside that link's
+// collision envelope, measured by the generalized winding number (the summed
+// solid angle over 4*pi counts how many closed outward-wound pieces enclose
+// the point; the generator pads its hulls by a small margin so no vertex sits
+// on a surface). This is the guard against the hole rdk's hull decimator left
+// in link2 (a shaft with no vertices in its middle): the AABB test above
+// cannot see a missing middle, this can.
 func TestCollisionEnvelopesEncloseTheVisualMeshes(t *testing.T) {
 	var meshCfg referenceframe.ModelConfigJSON
 	if err := json.Unmarshal(meshModelJSON, &meshCfg); err != nil {
@@ -341,35 +354,18 @@ func TestCollisionEnvelopesEncloseTheVisualMeshes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The envelope is a union of axis-aligned boxes, 12 triangles each.
-		tris := env.Triangles()
-		if len(tris)%12 != 0 {
-			t.Fatalf("%s: %d triangles is not a whole number of boxes", l.ID, len(tris))
+		var tris [][3]r3.Vector
+		for _, tr := range env.Triangles() {
+			p := tr.Points()
+			tris = append(tris, [3]r3.Vector{p[0], p[1], p[2]})
 		}
-		type box struct{ lo, hi r3.Vector }
-		var boxes []box
-		for i := 0; i < len(tris); i += 12 {
-			b := box{lo: r3.Vector{X: math.Inf(1), Y: math.Inf(1), Z: math.Inf(1)}}
-			b.hi = b.lo.Mul(-1)
-			for _, tr := range tris[i : i+12] {
-				for _, p := range tr.Points() {
-					b.lo = r3.Vector{X: math.Min(b.lo.X, p.X), Y: math.Min(b.lo.Y, p.Y), Z: math.Min(b.lo.Z, p.Z)}
-					b.hi = r3.Vector{X: math.Max(b.hi.X, p.X), Y: math.Max(b.hi.Y, p.Y), Z: math.Max(b.hi.Z, p.Z)}
-				}
-			}
-			boxes = append(boxes, b)
-		}
-		const tol = 0.5 // mm; PLY metres are written with 6 decimals
 		outside := 0
 		for _, p := range glbPositions(t, glbs[l.ID].Mesh) {
-			in := false
-			for _, b := range boxes {
-				if p.X >= b.lo.X-tol && p.X <= b.hi.X+tol && p.Y >= b.lo.Y-tol && p.Y <= b.hi.Y+tol && p.Z >= b.lo.Z-tol && p.Z <= b.hi.Z+tol {
-					in = true
-					break
-				}
+			w := 0.0
+			for _, tr := range tris {
+				w += solidAngle(tr, p)
 			}
-			if !in {
+			if w/(4*math.Pi) < 0.5 {
 				outside++
 			}
 		}

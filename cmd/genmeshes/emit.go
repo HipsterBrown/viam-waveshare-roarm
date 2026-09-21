@@ -117,8 +117,8 @@ func mm(v r3.Vector) string { return fmt.Sprintf("(%.1f, %.1f, %.1f)", v.X, v.Y,
 // Jaw: gripper_link.stl is the moving jaw, hinged on link5_to_gripper_link.
 // It is aligned into the tool frame (link5 frame translated by toolOffsetMM
 // along +Z) at jaw angle 0 (closed), centred like the arm links, and written
-// at full resolution (viewer) and as slab boxes (collision).
-func emitJaw(joints []urdfJoint, world map[string]spatialmath.Pose, meshDir, out string, budget int) error {
+// at full resolution (viewer) and as per-slab bounding polytopes (collision).
+func emitJaw(joints []urdfJoint, world map[string]spatialmath.Pose, meshDir, out string, slabs int) error {
 	jaw, ok := jointByChild(joints, "gripper_link")
 	if !ok {
 		return fmt.Errorf("URDF has no joint whose child is gripper_link")
@@ -134,12 +134,12 @@ func emitJaw(joints []urdfJoint, world map[string]spatialmath.Pose, meshDir, out
 	centred := translateTris(aligned, c.Mul(-1))
 
 	full := toMesh(centred, "gripper_jaw").TrianglesToPLYBytes(false)
-	envelope := slabBoxes(centred, budget/12)
+	pieces := slabHulls(centred, slabs)
 	jawPos, _ := weld(centred)
-	if n, gap := coverage(jawPos, envelope, coverageTolMM); n > 0 {
+	if n, gap := coverage(jawPos, pieces, coverageTolMM); n > 0 {
 		return fmt.Errorf("jaw: collision envelope leaves %d vertices outside it (worst %.1f mm)", n, gap)
 	}
-	envMesh := toMesh(boxesTris(envelope), "gripper_jaw")
+	envMesh := toMesh(flatten(pieces), "gripper_jaw")
 	if err := os.WriteFile(filepath.Join(out, "meshes", "gripper_jaw.ply"), full, 0o644); err != nil {
 		return err
 	}

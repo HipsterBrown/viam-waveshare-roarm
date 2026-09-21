@@ -43,7 +43,7 @@ type SimulatedGripperConfig struct {
 	SimulateTime *bool `json:"simulate_time,omitempty"`
 
 	// CollisionGeometry selects the jaw's collision shape in the kinematic model:
-	// "" or "box" for a bounding box, "mesh" for the jaw's slab-box envelope.
+	// "" or "box" for a bounding box, "mesh" for the jaw's bounding-polytope envelope.
 	CollisionGeometry string `json:"collision_geometry,omitempty"`
 }
 

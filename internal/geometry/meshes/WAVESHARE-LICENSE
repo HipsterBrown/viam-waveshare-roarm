@@ -12,4 +12,4 @@ That package declares in its package.xml:
 
 The original STL files are not redistributed here; these artifacts are
 generated from them by cmd/genmeshes (welded, transformed into this module's
-link frames, and for the collision meshes reduced to slab-box envelopes).
+link frames, and for the collision meshes reduced to per-slab bounding polytopes).

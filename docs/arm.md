@@ -38,7 +38,7 @@ The following attributes are available for the arm component:
 | `serial_timeout`                    | duration         | Optional     | Serial communication timeout. Accepts a duration string (e.g. `"1s"`) or integer nanoseconds. Default is `1s`.|
 | `speed_degs_per_sec`                | float32          | Optional     | The rotational speed for arm movements (must be between 3 and 180). Default is `50` degrees/second. Validated at config time.  |
 | `acceleration_degs_per_sec_per_sec` | float32          | Optional     | The acceleration for arm movements (must be between 10 and 500). Default is `100` degrees/second^2. Validated at config time.  |
-| `collision_geometry`                | string           | Optional     | `box` (default) or `mesh`. `box` uses one axis-aligned box per link sized from the CAD mesh; `mesh` uses a tighter envelope of 16 axis-aligned slab boxes per link (a stair-stepped hull of the CAD mesh) for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
+| `collision_geometry`                | string           | Optional     | `box` (default) or `mesh`. `box` uses one axis-aligned box per link sized from the CAD mesh; `mesh` uses a tighter envelope per link: the CAD mesh cut into 6 slabs along its length, each replaced by a 26-sided bounding polytope that chamfers the corners and edges the mesh does not reach, for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
 
 *Either `host` or `port` must be specified, but not both.
 

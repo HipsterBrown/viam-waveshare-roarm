@@ -55,7 +55,7 @@ type RoArmGripperConfig struct {
 	Arm string `json:"arm"`
 
 	// CollisionGeometry selects the jaw's collision shape: "" or "box" for a
-	// bounding box, "mesh" for the jaw's slab-box envelope.
+	// bounding box, "mesh" for the jaw's bounding-polytope envelope.
 	CollisionGeometry string `json:"collision_geometry,omitempty"`
 }
 

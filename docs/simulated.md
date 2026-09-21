@@ -11,7 +11,7 @@
 | `speed_degs_per_sec` | float64 | Optional | How fast each joint travels toward its target, in degrees/second. Default is `90`. |
 | `motion` | string | Optional | The name of the motion service used to plan `MoveToPosition` requests. Default is `builtin`. |
 | `simulate_time` | bool | Optional | Whether a background goroutine advances the arm's position in real time. Default is `true`. |
-| `collision_geometry` | string | Optional | `box` (default) or `mesh`. `box` uses one axis-aligned box per link sized from the CAD mesh; `mesh` uses a tighter envelope of 16 axis-aligned slab boxes per link (a stair-stepped hull of the CAD mesh) for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
+| `collision_geometry` | string | Optional | `box` (default) or `mesh`. `box` uses one axis-aligned box per link sized from the CAD mesh; `mesh` uses a tighter envelope per link: the CAD mesh cut into 6 slabs along its length, each replaced by a 26-sided bounding polytope that chamfers the corners and edges the mesh does not reach, for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
 
 ### `hipsterbrown:waveshare-roarm:simulated-gripper` attributes
 
@@ -21,7 +21,7 @@ The simulated gripper needs no `arm` attribute: it is fully independent hardware
 |---|---|---|---|
 | `speed_degs_per_sec` | float64 | Optional | How fast the jaw travels toward its target, in degrees/second. Default is `90`. |
 | `simulate_time` | bool | Optional | Whether a background goroutine advances the jaw in real time. Default is `true`. |
-| `collision_geometry` | string | Optional | `box` (default) or `mesh`. `box` uses an axis-aligned box sized from the CAD mesh; `mesh` uses a tighter envelope of slab boxes around the jaw for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
+| `collision_geometry` | string | Optional | `box` (default) or `mesh`. `box` uses an axis-aligned box sized from the CAD mesh; `mesh` uses a tighter envelope of per-slab bounding polytopes around the jaw for planning. Both place their geometry at the same point, so the 3D scene looks the same either way. `mesh` costs more planning time. |
 
 ### Example: simulated arm with a simulated gripper
 

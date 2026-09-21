@@ -60,7 +60,7 @@ type RoArmM3Config struct {
 	Motion string `json:"motion,omitempty"`
 
 	// CollisionGeometry selects the collision shapes of the kinematic model:
-	// "" or "box" for one bounding box per link, "mesh" for slab-box envelopes.
+	// "" or "box" for one bounding box per link, "mesh" for per-slab bounding-polytope envelopes.
 	CollisionGeometry string `json:"collision_geometry,omitempty"`
 }
 

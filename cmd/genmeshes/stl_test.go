@@ -72,3 +72,44 @@ func TestWeld(t *testing.T) {
 		t.Fatalf("weld: %d vertices, %d indices; want 8 and 36", len(pos), len(idx))
 	}
 }
+
+func TestConvexHullOfCubeCorners(t *testing.T) {
+	var pts []r3.Vector
+	for _, x := range []float64{0, 10} {
+		for _, y := range []float64{0, 10} {
+			for _, z := range []float64{0, 10} {
+				pts = append(pts, r3.Vector{X: x, Y: y, Z: z})
+			}
+		}
+	}
+	pts = append(pts, r3.Vector{X: 5, Y: 5, Z: 5}) // interior point must not appear
+	hull := convexHull(pts)
+	if len(hull) != 12 {
+		t.Fatalf("cube hull has %d triangles, want 12", len(hull))
+	}
+	if n, _ := coverage(pts, [][][3]r3.Vector{hull}, 1e-9); n != 0 {
+		t.Fatalf("%d points outside their own hull", n)
+	}
+	if convexHull([]r3.Vector{{}, {X: 1}, {X: 2}, {X: 3}}) != nil {
+		t.Fatal("collinear points must be degenerate")
+	}
+}
+
+func TestSlabHullsEncloseTheMesh(t *testing.T) {
+	tris, _ := readSTL(unitCubeSTL())
+	pieces := slabHulls(tris, 4)
+	pos, _ := weld(tris)
+	if n, gap := coverage(pos, pieces, 0.5); n != 0 {
+		t.Fatalf("%d vertices outside the envelope (worst %.2f mm)", n, gap)
+	}
+	for _, p := range pieces {
+		if len(p) > 92 { // a 26-face polytope has at most 48 vertices, 2V-4 triangles
+			t.Fatalf("a slab polytope has %d triangles, over the 26-direction bound", len(p))
+		}
+	}
+	// A cube's bounding polytope is the cube itself (plus the 0.05 mm margin).
+	lo, hi := aabb(flatten(slabHulls(tris, 1)))
+	if hi.Sub(lo).Sub(r3.Vector{X: 10.1, Y: 10.1, Z: 10.1}).Norm() > 1e-6 {
+		t.Fatalf("cube polytope extent %v", hi.Sub(lo))
+	}
+}

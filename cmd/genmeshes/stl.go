@@ -96,79 +96,6 @@ func toMesh(tris [][3]r3.Vector, label string) *spatialmath.Mesh {
 	return spatialmath.NewMesh(spatialmath.NewZeroPose(), ts, label)
 }
 
-// aabbBox is one slab of a collision envelope.
-type aabbBox struct{ lo, hi r3.Vector }
-
-// slabBoxes is the collision decimation: the mesh is cut into n slabs along
-// its longest axis and each slab becomes the axis-aligned box of every
-// triangle that touches it. Each triangle lies entirely inside the box of
-// every slab it touches, so the union encloses the mesh by construction.
-// rdk's ConservativeDecimate was tried first and silently dropped slabs on
-// this CAD (a shaft with no vertices in its middle, a thin plate between two
-// prongs), leaving holes in the collision envelope.
-func slabBoxes(tris [][3]r3.Vector, n int) []aabbBox {
-	if n < 1 {
-		n = 1
-	}
-	lo, hi := aabb(tris)
-	ext := hi.Sub(lo)
-	axis := 0
-	if ext.Y > ext.X {
-		axis = 1
-	}
-	if ext.Z > []float64{ext.X, ext.Y, ext.Z}[axis] {
-		axis = 2
-	}
-	get := func(v r3.Vector) float64 { return []float64{v.X, v.Y, v.Z}[axis] }
-	start, width := get(lo), get(ext)/float64(n)
-	slab := func(x float64) int {
-		i := int((x - start) / width)
-		if i >= n {
-			i = n - 1
-		}
-		if i < 0 {
-			i = 0
-		}
-		return i
-	}
-	boxes := make([]aabbBox, n)
-	used := make([]bool, n)
-	for i := range boxes {
-		boxes[i].lo = r3.Vector{X: math.Inf(1), Y: math.Inf(1), Z: math.Inf(1)}
-		boxes[i].hi = boxes[i].lo.Mul(-1)
-	}
-	for _, t := range tris {
-		a, b := n, -1
-		for _, p := range t {
-			i := slab(get(p))
-			a, b = min(a, i), max(b, i)
-		}
-		for i := a; i <= b; i++ {
-			used[i] = true
-			for _, p := range t {
-				boxes[i].lo = r3.Vector{X: math.Min(boxes[i].lo.X, p.X), Y: math.Min(boxes[i].lo.Y, p.Y), Z: math.Min(boxes[i].lo.Z, p.Z)}
-				boxes[i].hi = r3.Vector{X: math.Max(boxes[i].hi.X, p.X), Y: math.Max(boxes[i].hi.Y, p.Y), Z: math.Max(boxes[i].hi.Z, p.Z)}
-			}
-		}
-	}
-	var out []aabbBox
-	for i, b := range boxes {
-		if used[i] {
-			out = append(out, b)
-		}
-	}
-	return out
-}
-
-// boxesTris is the triangle surface of every box, 12 per box, wound outward.
-func boxesTris(boxes []aabbBox) [][3]r3.Vector {
-	var out [][3]r3.Vector
-	for _, b := range boxes {
-		out = append(out, boxTris(b.lo, b.hi)...)
-	}
-	return out
-}
-
 // boxTris is the 12-triangle surface of the box [lo, hi], wound outward.
 func boxTris(lo, hi r3.Vector) [][3]r3.Vector {
 	v := func(x, y, z bool) r3.Vector {
@@ -193,25 +120,4 @@ func boxTris(lo, hi r3.Vector) [][3]r3.Vector {
 	t = append(t, q(v(false, false, false), v(false, false, true), v(false, true, true), v(false, true, false))...) // -X
 	t = append(t, q(v(true, false, false), v(true, true, false), v(true, true, true), v(true, false, true))...)     // +X
 	return t
-}
-
-// coverage returns how many points lie outside every box by more than tol
-// (mm), and the worst such distance. The envelope is correct by construction;
-// this is the guard that keeps it so.
-func coverage(points []r3.Vector, boxes []aabbBox, tol float64) (outside int, worst float64) {
-	for _, p := range points {
-		best := math.Inf(1)
-		for _, b := range boxes {
-			d := 0.0
-			for _, pair := range [][3]float64{{p.X, b.lo.X, b.hi.X}, {p.Y, b.lo.Y, b.hi.Y}, {p.Z, b.lo.Z, b.hi.Z}} {
-				d = math.Max(d, math.Max(pair[1]-pair[0], pair[0]-pair[2]))
-			}
-			best = math.Min(best, d)
-		}
-		if best > tol {
-			outside++
-			worst = math.Max(worst, best)
-		}
-	}
-	return outside, worst
 }
