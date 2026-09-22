@@ -8,25 +8,25 @@
     {
       "api": "rdk:component:arm",
       "model": "hipsterbrown:waveshare-roarm:arm",
-      "short_description": "Control the first 5 joints of the RoArm-M3: base, shoulder, elbow, wrist, and roll",
+      "short_description": "Control the first 5 joints of the RoArm-M3",
       "markdown_link": "docs/arm.md#model-hipsterbrownwaveshare-roarmarm"
     },
     {
       "api": "rdk:component:gripper",
       "model": "hipsterbrown:waveshare-roarm:gripper",
-      "short_description": "Control the parallel gripper (joint 6) of the RoArm-M3 5-DOF+gripper arm",
+      "short_description": "Control the parallel gripper of the RoArm-M3 5-DOF+gripper arm",
       "markdown_link": "docs/gripper.md#model-hipsterbrownwaveshare-roarmgripper"
     },
     {
       "api": "rdk:component:arm",
       "model": "hipsterbrown:waveshare-roarm:simulated",
-      "short_description": "Hardware-free simulated RoArm-M3 arm for testing, motion planning, and 3D visualization without a physical robot",
+      "short_description": "Hardware-free simulated RoArm-M3 arm",
       "markdown_link": "docs/simulated.md"
     },
     {
       "api": "rdk:component:gripper",
       "model": "hipsterbrown:waveshare-roarm:simulated-gripper",
-      "short_description": "Hardware-free simulated RoArm-M3 gripper for testing and 3D visualization without a physical robot",
+      "short_description": "Hardware-free simulated RoArm-M3 gripper",
       "markdown_link": "docs/simulated.md"
     }
   ],
