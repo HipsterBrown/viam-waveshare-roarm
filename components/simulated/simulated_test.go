@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/geo/r3"
 	rdkarm "go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
+	"go.viam.com/rdk/services/motion"
+	"go.viam.com/rdk/spatialmath"
 
 	"waveshareroarm/internal/roarm"
 )
@@ -187,6 +190,42 @@ func TestSimulatedMoveToJointPositions(t *testing.T) {
 	} else if moving {
 		t.Fatal("expected the arm to have stopped moving")
 	}
+}
+
+// The simulated arm interpolates at its configured speed; a slower requested
+// profile must make the same move take proportionally longer, or a motion plan
+// validated against the simulator tells you nothing about the real arm.
+func TestSimulatedArmHonorsMoveOptionsSpeed(t *testing.T) {
+	sim := newTestSimArm(t, 1.0) // 1 rad/s configured
+	ctx := context.Background()
+	base := time.Time{}
+
+	// Half the configured speed: after one second the arm is half way to a
+	// 1-radian target instead of at it.
+	moveErr := make(chan error, 1)
+	go func() {
+		moveErr <- sim.MoveThroughJointPositions(ctx,
+			[][]referenceframe.Input{{1.0, 0, 0, 0, 0}},
+			&rdkarm.MoveOptions{MaxVelRads: 0.5}, nil)
+	}()
+	waitForMoving(t, sim)
+
+	sim.updateForTime(base.Add(time.Second))
+	inputs, err := sim.JointPositions(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertInputs(t, inputs, []float64{0.5, 0, 0, 0, 0}, "half way at half the configured speed")
+
+	sim.updateForTime(base.Add(2 * time.Second))
+	if err := <-moveErr; err != nil {
+		t.Fatal(err)
+	}
+	inputs, err = sim.JointPositions(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertInputs(t, inputs, []float64{1.0, 0, 0, 0, 0}, "at the target after two seconds")
 }
 
 func TestSimulatedMoveRejectsWrongJointCount(t *testing.T) {
@@ -507,5 +546,160 @@ func TestSimulatedMoveToPositionRequiresMotionService(t *testing.T) {
 	err := s.MoveToPosition(context.Background(), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "requires a motion service") {
 		t.Fatalf("expected the nil-motion guard to fire, got %v", err)
+	}
+}
+
+// fakeMotion is the smallest motion.Service that records the last MoveReq. The embedded
+// interface is nil: only Move is ever called, and any other method panicking is the
+// correct answer for a stub.
+type fakeMotion struct {
+	motion.Service
+	last motion.MoveReq
+}
+
+func (f *fakeMotion) Move(ctx context.Context, req motion.MoveReq) (bool, error) {
+	f.last = req
+	return true, nil
+}
+
+// newPlanningSimArm builds a simulated arm through its real constructor, which is the only
+// place the tolerances are resolved (the model is AlwaysRebuild and has no Reconfigure).
+func newPlanningSimArm(t *testing.T, cfg *SimulatedArmConfig) (*simulatedArm, *fakeMotion) {
+	t.Helper()
+	simulateTime := false
+	cfg.SimulateTime = &simulateTime
+	fm := &fakeMotion{}
+	deps := resource.Dependencies{motion.Named(cfg.motionName()): fm}
+	a, err := newSimulatedArm(context.Background(), deps, resource.Config{
+		Name:                "simarm",
+		API:                 rdkarm.API,
+		Model:               Model,
+		ConvertedAttributes: cfg,
+	}, logging.NewTestLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := a.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	return a.(*simulatedArm), fm
+}
+
+var testGoalPose = spatialmath.NewPose(
+	r3.Vector{X: 300, Y: 0, Z: 200},
+	&spatialmath.OrientationVectorDegrees{OZ: -1},
+)
+
+// The constructor resolves the tolerances, and MoveToPosition plans against that cone
+// instead of the old hardcoded position_only.
+func TestSimulatedMoveToPositionSendsTheConfiguredCone(t *testing.T) {
+	s, fm := newPlanningSimArm(t, &SimulatedArmConfig{OrientationToleranceDeg: 15, PositionToleranceMM: 2})
+	if err := s.MoveToPosition(context.Background(), testGoalPose, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.Parent() != "simarm_origin" {
+		t.Errorf("destination frame = %q, want %q", dest.Parent(), "simarm_origin")
+	}
+	if dest.GoalCloud == nil {
+		t.Fatal("no goal cloud on the destination: orientation would still be ignored")
+	}
+	if dest.GoalCloud.X != 2 || dest.GoalCloud.Y != 2 || dest.GoalCloud.Z != 2 {
+		t.Errorf("positional leeway = (%v, %v, %v), want 2 on each axis",
+			dest.GoalCloud.X, dest.GoalCloud.Y, dest.GoalCloud.Z)
+	}
+	if want := 1 - math.Cos(15*math.Pi/180); math.Abs(dest.GoalCloud.OZ-want) > 1e-12 {
+		t.Errorf("OZ = %v, want %v (a 15deg cone)", dest.GoalCloud.OZ, want)
+	}
+	if _, ok := fm.last.Extra["goal_metric_type"]; ok {
+		t.Error("goal_metric_type must no longer be sent: the cone replaces position_only")
+	}
+}
+
+// An unset pair resolves to the package defaults rather than a zero-leeway cloud no IK
+// solution lands inside.
+func TestSimulatedMoveToPositionDefaultsTheConeWhenUnset(t *testing.T) {
+	s, fm := newPlanningSimArm(t, &SimulatedArmConfig{})
+	if err := s.MoveToPosition(context.Background(), testGoalPose, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	// Guard before dereferencing: a missing cloud is the exact regression this test
+	// catches, and a nil deref would take the whole test binary down with it.
+	if dest.GoalCloud == nil {
+		t.Fatal("no goal cloud on the destination: orientation would still be ignored")
+	}
+	if dest.GoalCloud.X != 1.0 {
+		t.Errorf("positional leeway = %v, want the 1.0mm default", dest.GoalCloud.X)
+	}
+	if want := 1 - math.Cos(30*math.Pi/180); math.Abs(dest.GoalCloud.OZ-want) > 1e-12 {
+		t.Errorf("OZ = %v, want %v (the 30deg default cone)", dest.GoalCloud.OZ, want)
+	}
+}
+
+// The escape hatches reach the simulated model too: goal_metric_type suppresses the cloud
+// and is forwarded, a raw pose_cloud replaces the cone and is consumed, and both together
+// are rejected.
+func TestSimulatedMoveToPositionExtraPrecedence(t *testing.T) {
+	t.Run("goal_metric_type", func(t *testing.T) {
+		s, fm := newPlanningSimArm(t, &SimulatedArmConfig{})
+		if err := s.MoveToPosition(context.Background(), testGoalPose,
+			map[string]interface{}{"goal_metric_type": "position_only"}); err != nil {
+			t.Fatal(err)
+		}
+		if fm.last.Destination.GoalCloud != nil {
+			t.Error("no cloud may be sent with position_only")
+		}
+		if got := fm.last.Extra["goal_metric_type"]; got != "position_only" {
+			t.Errorf("goal_metric_type = %v, want it forwarded to the planner", got)
+		}
+	})
+	t.Run("pose_cloud", func(t *testing.T) {
+		s, fm := newPlanningSimArm(t, &SimulatedArmConfig{})
+		if err := s.MoveToPosition(context.Background(), testGoalPose,
+			map[string]interface{}{"pose_cloud": map[string]interface{}{"x": 5.0, "oz": 0.25}}); err != nil {
+			t.Fatal(err)
+		}
+		cloud := fm.last.Destination.GoalCloud
+		if cloud == nil || cloud.X != 5.0 || cloud.OZ != 0.25 {
+			t.Errorf("goal cloud = %v, want the caller's cloud verbatim", cloud)
+		}
+		if _, ok := fm.last.Extra["pose_cloud"]; ok {
+			t.Error("pose_cloud is consumed here, not a planner key")
+		}
+	})
+	t.Run("both keys", func(t *testing.T) {
+		s, _ := newPlanningSimArm(t, &SimulatedArmConfig{})
+		err := s.MoveToPosition(context.Background(), testGoalPose, map[string]interface{}{
+			"pose_cloud":       map[string]interface{}{"oz": 0.5},
+			"goal_metric_type": "position_only",
+		})
+		if err == nil {
+			t.Fatal("expected an error for pose_cloud plus goal_metric_type")
+		}
+		if !strings.Contains(err.Error(), "pose_cloud") || !strings.Contains(err.Error(), "goal_metric_type") {
+			t.Errorf("the error must name both offending keys: %v", err)
+		}
+	})
+}
+
+func TestSimulatedValidateRejectsBadGoalCloudTolerances(t *testing.T) {
+	for name, cfg := range map[string]*SimulatedArmConfig{
+		"orientation above 180": {OrientationToleranceDeg: 181},
+		"negative orientation":  {OrientationToleranceDeg: -1},
+		"negative position":     {PositionToleranceMM: -1},
+		"NaN orientation":       {OrientationToleranceDeg: math.NaN()},
+		"NaN position":          {PositionToleranceMM: math.NaN()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := cfg.Validate("p"); err == nil {
+				t.Error("want a validation error, got nil")
+			}
+		})
+	}
+	if _, _, err := (&SimulatedArmConfig{OrientationToleranceDeg: 180}).Validate("p"); err != nil {
+		t.Errorf("180 degrees and an unset position tolerance are both legal: %v", err)
 	}
 }

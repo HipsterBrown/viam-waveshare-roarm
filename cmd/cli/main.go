@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -25,9 +26,13 @@ func usage() {
   move <joint> <rad> [deg_per_sec] [deg_per_sec2]
                                         move one joint (1-6, software frame); no limit checks
   gripper <rad>                         move joint 6 (software frame)
-  time-move <joint> <from_rad> <to_rad> <deg_per_sec>
+  torque <on|off>                       enable or disable servo torque
+  health [reset]                        print the link health counters, optionally zeroing them
+  time-move <joint> <from_rad> <to_rad> <deg_per_sec> [deg_per_sec2]
                                         move to from_rad, settle, then move to to_rad while
-                                        polling feedback; print elapsed and implied deg/s`)
+                                        polling feedback; print elapsed, implied deg/s and
+                                        each settle's outcome. Acceleration defaults to the
+                                        module default; pass a low one to exercise the ramp.`)
 	os.Exit(2)
 }
 
@@ -88,11 +93,38 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Println("OK")
+	case "torque":
+		if len(args) < 2 {
+			usage()
+		}
+		on := args[1] == "on" || args[1] == "true" || args[1] == "1"
+		if err := ctrl.SetTorque(ctx, on); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("torque %v\n", map[bool]string{true: "on", false: "off"}[on])
+	case "health":
+		h := ctrl.Health().Map()
+		keys := make([]string, 0, len(h))
+		for k := range h {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("%-20s %v\n", k, h[k])
+		}
+		if len(args) > 1 && args[1] == "reset" {
+			ctrl.ResetHealth()
+			fmt.Println("(counters reset)")
+		}
 	case "time-move":
 		if len(args) < 5 {
 			usage()
 		}
-		timeMove(ctx, ctrl, atoi(args[1]), atof(args[2]), atof(args[3]), atof(args[4]))
+		accel := 0.0 // 0 means the module default
+		if len(args) > 5 {
+			accel = atof(args[5])
+		}
+		timeMove(ctx, ctrl, atoi(args[1]), atof(args[2]), atof(args[3]), atof(args[4]), accel)
 	default:
 		usage()
 	}
@@ -101,23 +133,42 @@ func main() {
 // timeMove is bench task B1/B2: it parks the joint at from, then commands
 // `to` at degPerSec and polls feedback every 50 ms until the joint is within
 // tolerance or stops moving, printing the elapsed time and the implied speed.
-func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, degPerSec float64) {
+// timeMove parks the joint at from, then commands to at the given profile and
+// reports how long the settle actually took. degPerSecSq is optional: it
+// matters because the settle's window, grace and deadline all derive from the
+// acceleration, and a low one is the case that used to report a move complete
+// the instant it started.
+func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, degPerSec, degPerSecSq float64) {
+	if degPerSecSq <= 0 {
+		degPerSecSq = roarm.DefaultAccelDegsPerSecSq
+	}
 	speed := roarm.SpeedToUnits(degPerSec)
-	acc := roarm.AccelToUnits(roarm.DefaultAccelDegsPerSecSq)
+	acc := roarm.AccelToUnits(degPerSecSq)
 	mask := make([]bool, 6)
 	mask[joint-1] = true
 
 	park := func(target float64) []float64 {
-		if err := ctrl.SetJointRadian(ctx, joint, target, speed, acc); err != nil {
-			log.Fatal(err)
-		}
-		t := make([]float64, 6)
-		t[joint-1] = target
-		pos, err := ctrl.WaitUntilSettled(ctx, t, mask, 15*time.Second)
+		// Read before the write: Start must be a measured pose, and building
+		// the target from it keeps the other five joints where they are
+		// (a zero-filled target commanded them all to 0).
+		start, err := ctrl.GetJointRadians(ctx)
 		if err != nil {
 			log.Fatal(err)
 		}
-		return pos
+		if err := ctrl.SetJointRadian(ctx, joint, target, speed, acc); err != nil {
+			log.Fatal(err)
+		}
+		t := append([]float64(nil), start...)
+		t[joint-1] = target
+		res, err := ctrl.WaitUntilSettled(ctx, roarm.SettleRequest{
+			Target: t, Start: start, Mask: mask, SpeedUnits: speed, AccUnits: acc, RequireMotion: true,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("  settle: %v in %v (%d polls, %d retries, slowest read %v)\n",
+			res.Outcome, res.Elapsed.Round(time.Millisecond), res.Polls, res.Retries, res.SlowestRead.Round(time.Millisecond))
+		return res.Positions
 	}
 	park(from)
 	time.Sleep(300 * time.Millisecond)
@@ -126,8 +177,15 @@ func timeMove(ctx context.Context, ctrl *roarm.Controller, joint int, from, to, 
 	pos := park(to)
 	elapsed := time.Since(startedAt)
 	travelDeg := math.Abs(to-from) * 180 / math.Pi
-	fmt.Printf("joint %d: %.1f deg in %v -> %.1f deg/s (commanded %.1f deg/s, %d units); final %.4f rad\n",
-		joint, travelDeg, elapsed.Round(time.Millisecond), travelDeg/elapsed.Seconds(), degPerSec, speed, pos[joint-1])
+	fmt.Printf("joint %d: %.1f deg in %v -> %.1f deg/s (commanded %.1f deg/s at %.0f deg/s^2; %d/%d units); final %.4f rad\n",
+		joint, travelDeg, elapsed.Round(time.Millisecond), travelDeg/elapsed.Seconds(),
+		degPerSec, degPerSecSq, speed, acc, pos[joint-1])
+	// Health counters live on the Controller, so they only mean anything
+	// within one process. This subcommand is the only one that does enough
+	// reads for the ratio to be worth printing.
+	h := ctrl.Health()
+	fmt.Printf("  link: %d frames, %d retries (%.1f%%), %d exhausted, %d invalid, %d stale, %d read timeouts\n",
+		h.Frames, h.Retries, h.RetryPct(), h.RetriesExhausted, h.InvalidFrames, h.StaleFrames, h.ReadTimeouts)
 }
 
 func atoi(s string) int {

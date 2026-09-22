@@ -218,7 +218,11 @@ func TestStreamed_FinalSettleWaitsForTheLastSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fc.LastSettleTimeout < 3500*time.Millisecond {
-		t.Fatalf("final settle timeout %v; want about 2x the 2 s segment", fc.LastSettleTimeout)
+	req := fc.LastSettleRequest
+	if req.SpeedUnits != roarm.SpeedToUnits(0.5*180/math.Pi) {
+		t.Fatalf("the final settle got speed %d units; want the last segment's speed", req.SpeedUnits)
+	}
+	if len(req.Start) != 6 {
+		t.Fatalf("the final settle needs the measured start-gate pose, got %v", req.Start)
 	}
 }

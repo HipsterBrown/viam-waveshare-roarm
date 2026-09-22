@@ -50,7 +50,8 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 
 	var start, wall time.Time
 	var gate, maxLate time.Duration
-	var last []float64 // full 6-joint target of the previous point
+	var last []float64    // full 6-joint target of the previous point
+	var current []float64 // pose measured before the first point; the settle's start-gate
 	var gripper float64
 	var lastTravelRad float64 // longest arm-joint travel of the last segment
 	lastSpeed := speed
@@ -80,7 +81,8 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 			segSpeed := speed
 			if idx == 0 {
 				wall = r.clock.Time()
-				current, err := readAllJointRadians(ctx, ctrl)
+				var err error
+				current, err = readAllJointRadians(ctx, ctrl)
 				if err != nil {
 					return fmt.Errorf("streamed: read position before the first point: %w", err)
 				}
@@ -89,7 +91,7 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 				if roarm.MaxTravel(current, first, roarm.ArmMask) > streamStartGapRad {
 					r.logger.Debugf("streamed trajectory starts %.1f deg away; settled move to its first point",
 						roarm.MaxTravel(current, first, roarm.ArmMask)*180/math.Pi)
-					if err := r.moveAndSettle(ctx, ctrl, current, first, speed, acc); err != nil {
+					if err := r.moveAndSettle(ctx, ctrl, current, first, speed, acc, true); err != nil {
 						return err
 					}
 				}
@@ -140,7 +142,15 @@ func (r *roarmM3) MoveThroughJointPositionsStreamed(
 	settleFrom := r.clock.Time()
 	// The last point was written when its predecessor was due, so the arm
 	// still has that whole segment to travel; size the wait from it.
-	_, err := ctrl.WaitUntilSettled(ctx, last, roarm.ArmMask, roarm.SettleTimeoutFor(lastTravelRad, lastSpeed))
+	req := roarm.SettleRequest{
+		Start:         current,
+		Target:        last,
+		Mask:          roarm.ArmMask,
+		SpeedUnits:    lastSpeed,
+		AccUnits:      acc,
+		RequireMotion: true,
+	}
+	_, err := ctrl.WaitUntilSettled(ctx, req)
 	now := r.clock.Time()
 	r.logger.Infof("streamed %d points over %v: gate %v, late %d (max %v), settle %v, wall %v",
 		idx, prev, gate.Round(time.Millisecond), late, maxLate.Round(time.Millisecond),

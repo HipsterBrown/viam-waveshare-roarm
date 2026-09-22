@@ -8,13 +8,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/geo/r3"
+	rdkarm "go.viam.com/rdk/components/arm"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/operation"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
+	"go.viam.com/rdk/services/motion"
 	"go.viam.com/rdk/spatialmath"
 
 	"waveshareroarm/internal/geometry"
+	"waveshareroarm/internal/planning"
 	"waveshareroarm/internal/roarm"
 	"waveshareroarm/internal/testfake"
 )
@@ -292,6 +296,56 @@ func TestDoCommand_GetMotionParams(t *testing.T) {
 	}
 }
 
+func TestDoCommand_CommsHealth(t *testing.T) {
+	fc := &testfake.FakeController{}
+	fc.HealthSnap = roarm.HealthSnapshot{Frames: 200, Retries: 20, StaleFrames: 3}
+	r := newTestArm(t, fc)
+	out, err := r.DoCommand(context.Background(), map[string]interface{}{"command": roarm.CmdCommsHealth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["frames"] != 200 {
+		t.Fatalf("expected frames=200, got %v", out["frames"])
+	}
+	if out["retry_pct"] != 10.0 {
+		t.Fatalf("expected retry_pct=10, got %v", out["retry_pct"])
+	}
+	if out["stale_frames"] != 3 {
+		t.Fatalf("expected stale_frames=3, got %v", out["stale_frames"])
+	}
+	if _, ok := out["reset"]; ok {
+		t.Fatal("did not ask for a reset; \"reset\" should be absent")
+	}
+	// The counters must be untouched: a plain read must not reset them.
+	if fc.HealthSnap.Frames != 200 {
+		t.Fatalf("a plain read reset the counters: %+v", fc.HealthSnap)
+	}
+}
+
+func TestDoCommand_CommsHealthReset(t *testing.T) {
+	fc := &testfake.FakeController{}
+	fc.HealthSnap = roarm.HealthSnapshot{Frames: 200, Retries: 20}
+	r := newTestArm(t, fc)
+	out, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command": roarm.CmdCommsHealth,
+		"reset":   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["reset"] != true {
+		t.Fatalf("expected reset=true in the response, got %v", out)
+	}
+	// The reported snapshot is the pre-reset one (what the caller asked
+	// about); the counters underneath are zeroed for the next measurement.
+	if out["frames"] != 200 {
+		t.Fatalf("expected the response to report the pre-reset frames=200, got %v", out["frames"])
+	}
+	if fc.HealthSnap.Frames != 0 {
+		t.Fatalf("expected the counters to be zeroed after reset, got %+v", fc.HealthSnap)
+	}
+}
+
 func TestDoCommand_UnknownCommand(t *testing.T) {
 	fc := &testfake.FakeController{}
 	r := newTestArm(t, fc)
@@ -430,6 +484,25 @@ func TestArmMoveThroughJointPositions(t *testing.T) {
 	}
 }
 
+// MoveThroughJointPositions must route the resolved profile all the way to the
+// write and the settle. Delegating to the public MoveToJointPositions
+// re-snapshots the configured defaults and discards it.
+func TestMoveThroughJointPositionsRoutesMoveOptionsToTheWrite(t *testing.T) {
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{T: 1051, G: 3.0}}
+	r := newTestArm(t, fc) // configured defaults: 50 deg/s, 100 deg/s^2
+	opts := &rdkarm.MoveOptions{MaxVelRads: 10 * math.Pi / 180}
+	if err := r.MoveThroughJointPositions(context.Background(),
+		[][]referenceframe.Input{{0.2, 0, 0, 0, 0}}, opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := fc.LastSpeed; got != roarm.SpeedToUnits(10) {
+		t.Fatalf("the write used speed %d units, want %d (10 deg/s)", got, roarm.SpeedToUnits(10))
+	}
+	if got := fc.LastSettleRequest.SpeedUnits; got != roarm.SpeedToUnits(10) {
+		t.Fatalf("the settle got speed %d units, want the same %d the write used", got, roarm.SpeedToUnits(10))
+	}
+}
+
 func TestArmGoToInputs(t *testing.T) {
 	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{B: 0, S: 0, E: 0, Wrist: 0, R: 0, G: 0}}
 	r := newTestArm(t, fc)
@@ -449,11 +522,21 @@ func TestArmNewClientFromConn(t *testing.T) {
 }
 
 func TestNewRoArmM3_ConstructsHTTP(t *testing.T) {
-	// newRoArmM3 now requires a motion service dependency (builtin by default),
-	// which this test historically passed as nil deps. Skipped pending a
-	// motion-service test double; construction is still exercised indirectly by
-	// the Validate and Reconfigure tests.
-	t.Skip("requires motion.Service dependency injection")
+	conf := resource.Config{
+		Name:                "arm",
+		API:                 resource.APINamespace("rdk").WithType("component").WithSubtype("arm"),
+		ConvertedAttributes: &RoArmM3Config{Host: "127.0.0.1:0"},
+	}
+	deps := resource.Dependencies{motion.Named("builtin"): &fakeMotion{}}
+	// Should construct successfully in HTTP mode (no connection is attempted).
+	armRes, err := newRoArmM3(context.Background(), deps, conf, logging.NewTestLogger(t))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	defer armRes.Close(context.Background())
+	if armRes.Name().Name != "arm" {
+		t.Fatalf("expected name=arm, got %v", armRes.Name())
+	}
 }
 
 func TestArmReconfigure_MotionOnly(t *testing.T) {
@@ -749,5 +832,447 @@ func TestReconfigureSwitchesCollisionGeometry(t *testing.T) {
 	}
 	if fc.Closed {
 		t.Fatal("a collision_geometry change must not reopen the connection")
+	}
+}
+
+// The settle must be told the profile the write used, or it derives its timing
+// from the wrong numbers: at 40 deg/s^2 a default-profile derivation is far
+// too short.
+func TestMoveToJointPositionsPassesTheProfileToTheSettle(t *testing.T) {
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{T: 1051, B: 0.1, G: 3.0}}
+	r := newTestArm(t, fc)
+	// newTestArm builds the struct directly, so the configured profile is set
+	// here rather than through an attribute map.
+	r.defaultSpeed, r.defaultAcc = roarm.SpeedToUnits(25), roarm.AccelToUnits(40)
+
+	if err := r.MoveToJointPositions(context.Background(),
+		[]referenceframe.Input{0.5, 0, 0, 0, 0}, nil); err != nil {
+		t.Fatal(err)
+	}
+	req := fc.LastSettleRequest
+	if req.SpeedUnits != roarm.SpeedToUnits(25) || req.AccUnits != roarm.AccelToUnits(40) {
+		t.Fatalf("settle got speed=%d acc=%d, want the configured profile", req.SpeedUnits, req.AccUnits)
+	}
+	if !req.RequireMotion {
+		t.Fatal("an arm move must require motion")
+	}
+	// Start must be the pose read from the arm, not the target: a commanded
+	// start pose makes a never-moved arm undetectable.
+	if len(req.Start) != 6 || math.Abs(req.Start[0]-0.1) > 1e-9 {
+		t.Fatalf("settle Start = %v, want the measured pose with 0.1 at joint 1", req.Start)
+	}
+}
+
+// The gripper bridge must settle against the pose read before the write, so a
+// jaw that never moved is detectable and the derived deadline matches the real
+// travel rather than the whole jaw range.
+func TestSetGripperRadSettlesAgainstTheMeasuredPose(t *testing.T) {
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{T: 1051, B: 0.1, G: 0.5}}
+	r := newTestArm(t, fc)
+	if _, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command":    roarm.CmdSetGripperRad,
+		roarm.KeyRad: 1.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := fc.LastSettleRequest
+	if len(req.Start) != 6 || math.Abs(req.Start[5]-0.5) > 1e-9 || math.Abs(req.Start[0]-0.1) > 1e-9 {
+		t.Fatalf("settle Start = %v, want the measured pose (jaw 0.5, joint 1 0.1)", req.Start)
+	}
+	if len(req.Target) != 6 || math.Abs(req.Target[5]-1.5) > 1e-9 || math.Abs(req.Target[0]-0.1) > 1e-9 {
+		t.Fatalf("settle Target = %v, want the measured pose with the jaw at 1.5", req.Target)
+	}
+	if !req.RequireMotion {
+		t.Fatal("set_gripper_rad must require motion unless require_motion says otherwise")
+	}
+}
+
+func TestSetGripperRadHonorsRequireMotionFalse(t *testing.T) {
+	fc := &testfake.FakeController{Feedback: roarm.FeedbackData{T: 1051, G: 0.5}}
+	r := newTestArm(t, fc)
+	if _, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command":              roarm.CmdSetGripperRad,
+		roarm.KeyRad:           1.5,
+		roarm.KeyRequireMotion: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fc.LastSettleRequest.RequireMotion {
+		t.Fatal("require_motion=false must reach the settle")
+	}
+}
+
+// The gripper recognises "this transport cannot read positions" by a marker
+// substring, so the new pre-write read has to keep the marker in its error.
+func TestSetGripperRadKeepsTheNoFeedbackMarker(t *testing.T) {
+	fc := &testfake.FakeController{FailOn: "GetJointRadians", FailWith: roarm.ErrNoFeedback}
+	r := newTestArm(t, fc)
+	_, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command":    roarm.CmdSetGripperRad,
+		roarm.KeyRad: 1.5,
+	})
+	if err == nil {
+		t.Fatal("expected the read to fail")
+	}
+	if !errors.Is(err, roarm.ErrNoFeedback) || !strings.Contains(err.Error(), roarm.NoFeedbackMarker) {
+		t.Fatalf("error must carry the no-feedback marker, got: %v", err)
+	}
+}
+
+// A fire-and-forget gripper command must still work on a transport that
+// cannot read positions. The settle's start pose is only needed when there is
+// a settle, so the pre-move read is skipped entirely when wait is false.
+func TestBridgeSetGripperRad_NoWaitNeedsNoFeedback(t *testing.T) {
+	fc := &testfake.FakeController{FailOn: "GetJointRadians", FailWith: roarm.ErrNoFeedback}
+	r := newTestArm(t, fc)
+	out, err := r.DoCommand(context.Background(), map[string]interface{}{
+		"command":     roarm.CmdSetGripperRad,
+		roarm.KeyRad:  1.5,
+		roarm.KeyWait: false,
+	})
+	if err != nil {
+		t.Fatalf("wait=false must not need a position read: %v", err)
+	}
+	if out["success"] != true {
+		t.Fatalf("expected success, got %v", out)
+	}
+	if fc.SettleCalls != 0 {
+		t.Fatalf("wait=false must not settle, got %d settle calls", fc.SettleCalls)
+	}
+}
+
+// fakeMotion is the smallest motion.Service that records the last MoveReq. The embedded
+// interface is nil: only Move is ever called, and any other method panicking is the
+// correct answer for a stub.
+type fakeMotion struct {
+	motion.Service
+	last    motion.MoveReq
+	calls   int
+	moveErr error
+}
+
+func (f *fakeMotion) Move(ctx context.Context, req motion.MoveReq) (bool, error) {
+	f.calls++
+	f.last = req
+	if f.moveErr != nil {
+		return false, f.moveErr
+	}
+	return true, nil
+}
+
+// newPlanningArm is newTestArm plus the two things MoveToPosition needs: a name (the
+// destination frame is derived from it) and a motion service to plan against.
+func newPlanningArm(t *testing.T, cfg *RoArmM3Config) (*roarmM3, *fakeMotion) {
+	t.Helper()
+	r := newTestArm(t, &testfake.FakeController{})
+	r.name = rdkarm.Named("myarm")
+	fm := &fakeMotion{}
+	r.motion = fm
+	r.cfg = cfg
+	r.goalCloud = planning.ResolveGoalCloudConfig(cfg.OrientationToleranceDeg, cfg.PositionToleranceMM, r.logger)
+	return r, fm
+}
+
+var testGoalPose = spatialmath.NewPose(
+	r3.Vector{X: 300, Y: 0, Z: 200},
+	&spatialmath.OrientationVectorDegrees{OZ: -1},
+)
+
+// Row 1: with no extra, the destination carries the cone built from the config, and no
+// goal_metric_type reaches the planner (the hardcoded position_only is gone).
+func TestMoveToPositionSendsTheConfiguredCone(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{OrientationToleranceDeg: 15, PositionToleranceMM: 2})
+	if err := r.MoveToPosition(context.Background(), testGoalPose, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.Parent() != "myarm_origin" {
+		t.Errorf("destination frame = %q, want %q", dest.Parent(), "myarm_origin")
+	}
+	if dest.GoalCloud == nil {
+		t.Fatal("no goal cloud on the destination: orientation would still be ignored")
+	}
+	// The configured tolerances, not the defaults, must be what reaches the planner.
+	if dest.GoalCloud.X != 2 || dest.GoalCloud.Y != 2 || dest.GoalCloud.Z != 2 {
+		t.Errorf("positional leeway = (%v, %v, %v), want 2 on each axis",
+			dest.GoalCloud.X, dest.GoalCloud.Y, dest.GoalCloud.Z)
+	}
+	if want := 1 - math.Cos(15*math.Pi/180); math.Abs(dest.GoalCloud.OZ-want) > 1e-12 {
+		t.Errorf("OZ = %v, want %v (a 15deg cone)", dest.GoalCloud.OZ, want)
+	}
+	if _, ok := fm.last.Extra["goal_metric_type"]; ok {
+		t.Error("goal_metric_type must no longer be sent: the cone replaces position_only")
+	}
+}
+
+// An unset pair resolves to the package defaults rather than a zero-leeway cloud no IK
+// solution lands inside.
+func TestMoveToPositionDefaultsTheConeWhenUnset(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{})
+	if err := r.MoveToPosition(context.Background(), testGoalPose, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	// Guard before dereferencing: a missing cloud is the exact regression this test
+	// catches, and a nil deref would take the whole test binary down with it.
+	if dest.GoalCloud == nil {
+		t.Fatal("no goal cloud on the destination: orientation would still be ignored")
+	}
+	if dest.GoalCloud.X != 1.0 {
+		t.Errorf("positional leeway = %v, want the 1.0mm default", dest.GoalCloud.X)
+	}
+	if want := 1 - math.Cos(30*math.Pi/180); math.Abs(dest.GoalCloud.OZ-want) > 1e-12 {
+		t.Errorf("OZ = %v, want %v (the 30deg default cone)", dest.GoalCloud.OZ, want)
+	}
+}
+
+// Row 2: the caller's goal_metric_type wins. No cloud is sent, and the key reaches the
+// planner so the old position_only behavior is still available.
+func TestMoveToPositionHonorsGoalMetricTypeInExtra(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{})
+	extra := map[string]interface{}{"goal_metric_type": "position_only"}
+	if err := r.MoveToPosition(context.Background(), testGoalPose, extra); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.GoalCloud != nil {
+		t.Error("no cloud may be sent with position_only: orientScale=0 makes its leeways meaningless")
+	}
+	if got := fm.last.Extra["goal_metric_type"]; got != "position_only" {
+		t.Errorf("goal_metric_type = %v, want it forwarded to the planner", got)
+	}
+}
+
+// Row 3: a raw pose_cloud replaces the cone, and pose_cloud is consumed rather than
+// forwarded (it is not a planner key).
+func TestMoveToPositionHonorsPoseCloudInExtra(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{})
+	extra := map[string]interface{}{
+		"pose_cloud": map[string]interface{}{"x": 5.0, "oz": 0.25, "theta": 10.0},
+	}
+	if err := r.MoveToPosition(context.Background(), testGoalPose, extra); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.GoalCloud == nil {
+		t.Fatal("the caller's pose_cloud must reach the destination")
+	}
+	if dest.GoalCloud.X != 5.0 || dest.GoalCloud.OZ != 0.25 || dest.GoalCloud.Theta != 10.0 {
+		t.Errorf("goal cloud = %+v, want the caller's cloud verbatim", *dest.GoalCloud)
+	}
+	if _, ok := fm.last.Extra["pose_cloud"]; ok {
+		t.Error("pose_cloud is consumed here, not a planner key")
+	}
+}
+
+// Row 4: both keys together are incoherent, so the move is rejected before the planner is
+// ever called.
+func TestMoveToPositionRejectsBothExtraKeys(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{})
+	err := r.MoveToPosition(context.Background(), testGoalPose, map[string]interface{}{
+		"pose_cloud":       map[string]interface{}{"oz": 0.5},
+		"goal_metric_type": "position_only",
+	})
+	if err == nil {
+		t.Fatal("expected an error for pose_cloud plus goal_metric_type")
+	}
+	if !strings.Contains(err.Error(), "pose_cloud") || !strings.Contains(err.Error(), "goal_metric_type") {
+		t.Errorf("the error must name both offending keys: %v", err)
+	}
+	if fm.calls != 0 {
+		t.Errorf("motion.Move was called %d times; an incoherent request must not reach the planner", fm.calls)
+	}
+}
+
+// A planning failure on the cone path must point the caller at both tolerances and at the
+// escape hatch, since this is a breaking change: goals that planned under position_only
+// may now fail.
+func TestMoveToPositionFailureNamesBothTolerances(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{OrientationToleranceDeg: 15, PositionToleranceMM: 2})
+	fm.moveErr = errors.New("no IK solution")
+	err := r.MoveToPosition(context.Background(), testGoalPose, nil)
+	if err == nil {
+		t.Fatal("expected the planner's error to propagate")
+	}
+	for _, want := range []string{
+		"orientation_tolerance_deg=15", "position_tolerance_mm=2",
+		"no IK solution", "goal_metric_type", "0.127.0",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must mention %q: %v", want, err)
+		}
+	}
+}
+
+// Reconfigure must pick the tolerances up: they sit beside the other reconfigurable motion
+// settings, so a config edit that does not rebuild the arm still has to take effect.
+func TestArmReconfigurePicksUpGoalCloudTolerances(t *testing.T) {
+	r, fm := newPlanningArm(t, &RoArmM3Config{Host: "1.2.3.4"})
+	conf := resource.Config{
+		Name: "arm",
+		ConvertedAttributes: &RoArmM3Config{
+			Host:                    "1.2.3.4",
+			OrientationToleranceDeg: 45,
+			PositionToleranceMM:     3,
+		},
+	}
+	if err := r.Reconfigure(context.Background(), nil, conf); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.MoveToPosition(context.Background(), testGoalPose, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := fm.last.Destination
+	if dest.GoalCloud.X != 3 {
+		t.Errorf("positional leeway = %v, want the reconfigured 3", dest.GoalCloud.X)
+	}
+	if want := 1 - math.Cos(45*math.Pi/180); math.Abs(dest.GoalCloud.OZ-want) > 1e-12 {
+		t.Errorf("OZ = %v, want %v (the reconfigured 45deg cone)", dest.GoalCloud.OZ, want)
+	}
+}
+
+func TestArmValidateRejectsBadGoalCloudTolerances(t *testing.T) {
+	for name, cfg := range map[string]*RoArmM3Config{
+		"orientation above 180": {Host: "h", OrientationToleranceDeg: 181},
+		"negative orientation":  {Host: "h", OrientationToleranceDeg: -1},
+		"negative position":     {Host: "h", PositionToleranceMM: -1},
+		"NaN orientation":       {Host: "h", OrientationToleranceDeg: math.NaN()},
+		"NaN position":          {Host: "h", PositionToleranceMM: math.NaN()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := cfg.Validate("p"); err == nil {
+				t.Error("want a validation error, got nil")
+			}
+		})
+	}
+	if _, _, err := (&RoArmM3Config{Host: "h", OrientationToleranceDeg: 180, PositionToleranceMM: 0}).Validate("p"); err != nil {
+		t.Errorf("180 degrees and an unset position tolerance are both legal: %v", err)
+	}
+}
+
+// --- extra: {"waitAtEnd": false, "interpolate": false} ---
+//
+// These are the keys the RDK's builtin motion service teleop executor sends on
+// every tick (rdk services/motion/builtin/teleop.go), not an invention of this
+// module. "wait" is accepted as an alias for the module's own vocabulary.
+
+func TestMoveToJointPositions_DefaultWaitsForSettle(t *testing.T) {
+	fc := &testfake.FakeController{}
+	r := newTestArm(t, fc)
+	target := []referenceframe.Input{0.3, 0, 0, 0, 0}
+
+	for _, extra := range []map[string]interface{}{
+		nil, {}, {"waitAtEnd": true}, {"wait": true}, {"waitAtEnd": "yes"},
+	} {
+		fc.SettleCalls = 0
+		if err := r.MoveToJointPositions(context.Background(), target, extra); err != nil {
+			t.Fatal(err)
+		}
+		if fc.SettleCalls != 1 {
+			t.Fatalf("extra=%v: expected 1 settle, got %d", extra, fc.SettleCalls)
+		}
+	}
+}
+
+func TestMoveToJointPositions_SkipsSettleOnEitherSpelling(t *testing.T) {
+	// HoldStill: the arm never reaches the goal, so a settle would run its
+	// whole budget. Both spellings must return anyway, with the goal written.
+	for _, extra := range []map[string]interface{}{
+		{"waitAtEnd": false}, {"wait": false},
+	} {
+		fc := &testfake.FakeController{HoldStill: true}
+		r := newTestArm(t, fc)
+		if err := r.MoveToJointPositions(context.Background(),
+			[]referenceframe.Input{0.3, 0, 0, 0, 0}, extra); err != nil {
+			t.Fatalf("extra=%v: %v", extra, err)
+		}
+		if fc.SettleCalls != 0 {
+			t.Fatalf("extra=%v: expected no settle, got %d", extra, fc.SettleCalls)
+		}
+		if fc.WriteCount != 1 {
+			t.Fatalf("extra=%v: expected 1 goal write, got %d", extra, fc.WriteCount)
+		}
+		if math.Abs(fc.LastRadians[0]-0.3) > 1e-9 {
+			t.Fatalf("extra=%v: expected joint 1 at 0.3, got %v", extra, fc.LastRadians)
+		}
+	}
+}
+
+// The exact payload rdk's teleop executor sends: one write, no settle.
+func TestMoveThroughJointPositions_TeleopPayloadCollapsesToOneWrite(t *testing.T) {
+	fc := &testfake.FakeController{HoldStill: true}
+	r := newTestArm(t, fc)
+	waypoints := [][]referenceframe.Input{
+		{0.1, 0, 0, 0, 0}, {0.2, 0, 0, 0, 0}, {0.3, 0, 0, 0, 0},
+	}
+
+	if err := r.MoveThroughJointPositions(context.Background(), waypoints, nil,
+		map[string]interface{}{"waitAtEnd": false, "interpolate": false}); err != nil {
+		t.Fatal(err)
+	}
+	if fc.SettleCalls != 0 {
+		t.Fatalf("expected no settle, got %d", fc.SettleCalls)
+	}
+	if fc.WriteCount != 1 {
+		t.Fatalf("interpolate=false must collapse to the endpoint: expected 1 write, got %d", fc.WriteCount)
+	}
+	if math.Abs(fc.LastRadians[0]-0.3) > 1e-9 {
+		t.Fatalf("expected the final waypoint 0.3 to be the one written, got %v", fc.LastRadians)
+	}
+}
+
+// interpolate defaults true, so a path the caller wants traced keeps its
+// intermediate settles even when the final one is skipped.
+func TestMoveThroughJointPositions_InterpolatedPathKeepsIntermediateSettles(t *testing.T) {
+	fc := &testfake.FakeController{}
+	r := newTestArm(t, fc)
+	waypoints := [][]referenceframe.Input{
+		{0.1, 0, 0, 0, 0}, {0.2, 0, 0, 0, 0}, {0.3, 0, 0, 0, 0},
+	}
+
+	if err := r.MoveThroughJointPositions(context.Background(), waypoints, nil,
+		map[string]interface{}{"waitAtEnd": false}); err != nil {
+		t.Fatal(err)
+	}
+	if fc.SettleCalls != 2 {
+		t.Fatalf("expected the 2 intermediate waypoints to settle, got %d", fc.SettleCalls)
+	}
+	if fc.WriteCount != 3 {
+		t.Fatalf("expected all 3 waypoints written, got %d", fc.WriteCount)
+	}
+}
+
+func TestMoveThroughJointPositions_DefaultsUnchanged(t *testing.T) {
+	fc := &testfake.FakeController{}
+	r := newTestArm(t, fc)
+	waypoints := [][]referenceframe.Input{
+		{0.1, 0, 0, 0, 0}, {0.2, 0, 0, 0, 0}, {0.3, 0, 0, 0, 0},
+	}
+
+	if err := r.MoveThroughJointPositions(context.Background(), waypoints, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if fc.SettleCalls != 3 || fc.WriteCount != 3 {
+		t.Fatalf("default must settle every waypoint: %d settles, %d writes", fc.SettleCalls, fc.WriteCount)
+	}
+}
+
+func TestMoveToJointPositions_NonBlockingStillReportsIsMoving(t *testing.T) {
+	// The call no longer stays in flight, so IsMoving has to come off the
+	// hardware -- otherwise a non-blocking move would make the arm look idle.
+	fc := &testfake.FakeController{HoldStill: true, Moving: true}
+	r := newTestArm(t, fc)
+
+	if err := r.MoveToJointPositions(context.Background(),
+		[]referenceframe.Input{0.3, 0, 0, 0, 0},
+		map[string]interface{}{"waitAtEnd": false}); err != nil {
+		t.Fatal(err)
+	}
+	moving, err := r.IsMoving(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !moving {
+		t.Fatal("expected IsMoving to report the arm still moving")
 	}
 }

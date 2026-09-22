@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"waveshareroarm/internal/roarm"
 )
@@ -28,9 +27,10 @@ type FakeController struct {
 	Moving            bool   // what IsMoving reports
 	HoldStill         bool   // when true, SetJointRadian(s) do not update Feedback (a blocked jaw, a stalled arm)
 	SettleCalls       int
-	LastSettleTimeout time.Duration // timeout passed to the most recent WaitUntilSettled
-	WriteCount        int           // SetJointRadian(s) calls
-	Closed            bool          // set by Close
+	LastSettleRequest roarm.SettleRequest  // request passed to the most recent WaitUntilSettled
+	WriteCount        int                  // SetJointRadian(s) calls
+	Closed            bool                 // set by Close
+	HealthSnap        roarm.HealthSnapshot // what Health reports; ResetHealth zeroes it
 }
 
 func (f *FakeController) err(method string) error {
@@ -151,15 +151,27 @@ func (f *FakeController) GetFeedback(ctx context.Context) (*roarm.FeedbackData, 
 	return &fb, nil
 }
 
-func (f *FakeController) WaitUntilSettled(ctx context.Context, target []float64, mask []bool, timeout time.Duration) ([]float64, error) {
+func (f *FakeController) WaitUntilSettled(ctx context.Context, req roarm.SettleRequest) (roarm.SettleResult, error) {
 	if err := f.err("WaitUntilSettled"); err != nil {
-		return nil, err
+		return roarm.SettleResult{}, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.SettleCalls++
-	f.LastSettleTimeout = timeout
-	return f.currentLocked(), nil
+	f.LastSettleRequest = req
+	return roarm.SettleResult{Positions: f.currentLocked(), Outcome: roarm.SettleArrived}, nil
+}
+
+func (f *FakeController) Health() roarm.HealthSnapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.HealthSnap
+}
+
+func (f *FakeController) ResetHealth() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.HealthSnap = roarm.HealthSnapshot{}
 }
 
 func (f *FakeController) IsMoving(ctx context.Context) (bool, error) {
@@ -180,18 +192,22 @@ func (f *FakeController) Close(ctx context.Context) error {
 // (a blocked jaw). Joint6Series, when non-empty, is returned one value per
 // get before falling back to Joint6Rad, so IsMoving's two reads can differ.
 type FakeArmRPC struct {
-	mu             sync.Mutex
-	Joint6Rad      float64
-	Joint6Series   []float64
-	HoldStill      bool
-	ArmMoving      bool
-	LastCommand    string
-	LastSetRad     float64
-	LastSetSpeed   float64
-	LastSetAcc     float64
-	LastWait       bool
-	StopCalls      int
-	DoCommandError error
+	mu           sync.Mutex
+	Joint6Rad    float64
+	Joint6Series []float64
+	HoldStill    bool
+	ArmMoving    bool
+	LastCommand  string
+	LastSetRad   float64
+	LastSetSpeed float64
+	LastSetAcc   float64
+	LastWait     bool
+	// LastRequireMotion defaults to true when the key is absent, mirroring the
+	// bridge's own default: a fake defaulting to false would let a caller that
+	// forgot the key pass a "Grab opts out" test.
+	LastRequireMotion bool
+	StopCalls         int
+	DoCommandError    error
 }
 
 func (f *FakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
@@ -218,6 +234,10 @@ func (f *FakeArmRPC) DoCommand(ctx context.Context, cmd map[string]interface{}) 
 		f.LastWait = true
 		if w, ok := cmd[roarm.KeyWait].(bool); ok {
 			f.LastWait = w
+		}
+		f.LastRequireMotion = true
+		if m, ok := cmd[roarm.KeyRequireMotion].(bool); ok {
+			f.LastRequireMotion = m
 		}
 		if !f.HoldStill {
 			f.Joint6Rad = rad
